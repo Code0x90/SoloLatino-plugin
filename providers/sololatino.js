@@ -214,7 +214,14 @@ function extractPlaylists(html, pageUrl) {
   return playlists;
 }
 
-function makeStream(url, index) {
+function languageLabel(language) {
+  var lang = String(language || '').toUpperCase();
+  if (lang === 'ESP') return 'Español';
+  if (lang === 'SUB') return 'Subtitulado';
+  return 'Latino';
+}
+
+function makeStream(url, language) {
   var isMorencius = /^https:\/\/morencius\.com\//i.test(url);
   var headers = {
     'User-Agent': UA,
@@ -223,10 +230,11 @@ function makeStream(url, index) {
   if (!isMorencius) headers.Origin = 'https://morencius.com';
   return {
     name: PROVIDER_NAME,
-    title: 'SoloLatino · HLS ' + index,
+    title: '',
     url: url,
-    quality: 'Auto',
-    headers: headers
+    quality: '📺 SoloLatino\nAuto | WEB-DL | SoloLatino\n' + languageLabel(language),
+    headers: headers,
+    type: 'hls'
   };
 }
 
@@ -280,7 +288,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
             if (!playlists.length) log('No se encontró playlist HLS en ' + safeUrl(pageUrl));
             playlists.forEach(function (playlist) {
               if (!streams.some(function (stream) { return stream.url === playlist; })) {
-                streams.push(makeStream(playlist, streams.length + 1));
+                streams.push(makeStream(playlist, language));
               }
             });
             return streams;
