@@ -1,8 +1,8 @@
 {
   "name": "sololatino-nuvio-plugin",
-  "version": "1.0.2",
+  "version": "1.0.4",
   "private": true,
-  "description": "Nuvio provider for SoloLatino; AnimeAV1-style quality label and Vidhide HLS only",
+  "description": "Nuvio provider for SoloLatino with Vidhide and Voe HLS extraction",
   "scripts": {
     "test:movie": "node tests/test-provider.js movie 299536",
     "test:tv": "node tests/test-provider.js tv 106646 1 1"
