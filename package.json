@@ -1,0 +1,13 @@
+{
+  "name": "sololatino-vidhide-nuvio-plugin",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Nuvio provider for SoloLatino Vidhide only",
+  "scripts": {
+    "test:movie": "node tests/test-provider.js movie 299536",
+    "test:tv": "node tests/test-provider.js tv 106646 1 1"
+  },
+  "dependencies": {
+    "crypto-js": "^4.2.0"
+  }
+}

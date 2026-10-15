@@ -1,0 +1,21 @@
+{
+  "name": "SoloLatino Vidhide",
+  "version": "1.0.0",
+  "scrapers": [
+    {
+      "id": "sololatino-vidhide",
+      "name": "SoloLatino · Vidhide",
+      "description": "Solo fuente Vidhide: TMDB → IMDb → Embed69 → HLS. Sin browser.capture.",
+      "version": "1.0.0",
+      "author": "Code0x90",
+      "supportedTypes": ["movie", "tv"],
+      "filename": "providers/sololatino-vidhide.js",
+      "enabled": true,
+      "formats": ["hls"],
+      "contentLanguage": ["es", "en"],
+      "limited": false,
+      "disabledPlatforms": [],
+      "supportsExternalPlayer": true
+    }
+  ]
+}
