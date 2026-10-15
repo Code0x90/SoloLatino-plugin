@@ -1,6 +1,6 @@
 {
-  "name": "sololatino-vidhide-nuvio-plugin",
-  "version": "1.0.0",
+  "name": "sololatino-nuvio-plugin",
+  "version": "1.0.1",
   "private": true,
   "description": "Nuvio provider for SoloLatino Vidhide only",
   "scripts": {

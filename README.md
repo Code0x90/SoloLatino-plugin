@@ -1,17 +1,17 @@
-# SoloLatino Vidhide para Nuvio
+# SoloLatino para Nuvio
 
-Plugin de prueba que solo devuelve fuentes Vidhide. No usa `kino.browser.capture` ni devuelve Principal, StreamWish o Voe.
+Plugin de prueba llamado SoloLatino. Extrae las playlists HLS mediante la ruta directa de Embed69 y devuelve únicamente esa fuente; no usa `kino.browser.capture`.
 
 ## Flujo
 
-`TMDB ID → IMDb ID → https://embed69.org/f/{slug} → Vidhide → playlist HLS`
+`TMDB ID → IMDb ID → https://embed69.org/f/{slug} → SoloLatino → playlist HLS`
 
 Para series, el slug probado por el script es `{imdbId}-{temporada}x{episodio con dos dígitos}`. La ruta directa para películas fue comprobada con TMDB `299536` (Avengers: Infinity War). La ruta directa de series aún debe validarse dentro de Nuvio.
 
 ## Archivos
 
 - `manifest.json`: repositorio de plugins de Nuvio.
-- `providers/sololatino-vidhide.js`: proveedor que exporta `getStreams(tmdbId, mediaType, season, episode)`.
+- `providers/sololatino.js`: proveedor que exporta `getStreams(tmdbId, mediaType, season, episode)`.
 - `tests/test-provider.js`: prueba local opcional con Node.js.
 
 ## Dependencia del runtime

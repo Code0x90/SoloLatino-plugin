@@ -1,18 +1,26 @@
 {
-  "name": "SoloLatino Vidhide",
-  "version": "1.0.0",
+  "name": "SoloLatino",
+  "version": "1.0.1",
   "scrapers": [
     {
-      "id": "sololatino-vidhide",
-      "name": "SoloLatino · Vidhide",
-      "description": "Solo fuente Vidhide: TMDB → IMDb → Embed69 → HLS. Sin browser.capture.",
-      "version": "1.0.0",
+      "id": "sololatino",
+      "name": "SoloLatino",
+      "description": "Proveedor SoloLatino para películas y series. Devuelve únicamente streams HLS compatibles.",
+      "version": "1.0.1",
       "author": "Code0x90",
-      "supportedTypes": ["movie", "tv"],
-      "filename": "providers/sololatino-vidhide.js",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/sololatino.js",
       "enabled": true,
-      "formats": ["hls"],
-      "contentLanguage": ["es", "en"],
+      "formats": [
+        "hls"
+      ],
+      "contentLanguage": [
+        "es",
+        "en"
+      ],
       "limited": false,
       "disabledPlatforms": [],
       "supportsExternalPlayer": true
