@@ -247,45 +247,60 @@ function decodeVoePayload(rawValue) {
 }
 
 function extractVoe(embedUrl) {
-  return fetchText(embedUrl, { 'Accept': 'text/html,application/xhtml+xml' })
-    .then(function (result) {
-      var html = result.text;
+  // Replica el flujo HTTP de AnimeAV1 1.2.5 exclusivamente para Voe:
+  // mismo User-Agent, sin añadir Accept ni Referer a la petición de la redirección.
+  var voeUA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+  function requestVoe(url) {
+    return fetch(url, { headers: { 'User-Agent': voeUA } }).then(function (response) {
+      return response.text().then(function (text) {
+        if (!response.ok) throw new Error('HTTP error! Status: ' + response.status + ' en ' + safeUrl(url));
+        return text;
+      });
+    });
+  }
+
+  return requestVoe(embedUrl)
+    .then(function (html) {
+      // fetch no ejecuta JavaScript: seguir window.location.href manualmente,
+      // igual que el extractor de AnimeAV1.
       var redirect = html.match(/window\.location\.href\s*=\s*['"]([^'"]+)['"]/);
       if (!redirect) return { html: html, pageUrl: embedUrl };
       var redirectUrl = redirect[1];
       log('Voe: redirección JS detectada -> ' + safeUrl(redirectUrl));
-      return fetchText(redirectUrl, { 'Referer': embedUrl, 'Accept': 'text/html,application/xhtml+xml' })
-        .then(function (redirectResult) {
-          return { html: redirectResult.text, pageUrl: embedUrl };
-        });
+      return requestVoe(redirectUrl).then(function (redirectHtml) {
+        return { html: redirectHtml, pageUrl: embedUrl };
+      });
     })
     .then(function (page) {
-      var script = page.html.match(/<script type="application\/json"[^>]*>([\s\S]*?)<\/script>/i);
-      if (!script) throw new Error('No se encontró el JSON del embed Voe.');
+      // Mantener el mismo selector y decodificación del resolver funcional.
+      var script = page.html.match(/<script type="application\/json"[^>]*>([\s\S]*?)<\/script>/);
+      if (!script) throw new Error('No se encontró el <script type="application/json"> en el embed de Voe');
       var jsonText = script[1].trim()
         .replace(/&amp;/g, '&').replace(/&quot;/g, '"')
         .replace(/&#34;/g, '"').replace(/&#39;/g, "'")
         .replace(/&lt;/g, '<').replace(/&gt;/g, '>');
       var payload;
       try { payload = JSON.parse(jsonText); }
-      catch (error) { throw new Error('JSON de Voe inválido: ' + error.message); }
-      if (!Array.isArray(payload) || !payload[0]) throw new Error('Voe no devolvió el payload esperado.');
+      catch (error) { throw new Error('No se pudo parsear el array JSON del embed de Voe: ' + error.message); }
+      if (!Array.isArray(payload) || !payload[0]) throw new Error('El embed de Voe no trajo el payload esperado');
       var decoded;
       try { decoded = decodeVoePayload(payload[0]); }
-      catch (error) { throw new Error('No se pudo decodificar Voe: ' + error.message); }
+      catch (error) { throw new Error('No se pudo decodificar el payload de Voe: ' + error.message); }
       var streamUrl = decoded && typeof decoded.source === 'string' ? decoded.source.trim() : '';
-      if (!/^https?:\/\//i.test(streamUrl)) throw new Error('Voe no devolvió una URL HLS HTTP válida.');
-      var origin = new URL(page.pageUrl).origin;
-      return {
+      if (!/^https?:\/\//i.test(streamUrl)) throw new Error('El payload de Voe no trajo una URL HLS válida');
+      var origin = new URL(embedUrl).origin;
+      var result = {
         url: streamUrl,
         headers: {
-          'User-Agent': UA,
           'Referer': origin + '/',
           'Sec-Fetch-Site': 'same-origin',
           'Sec-Fetch-Mode': 'cors',
-          'Sec-Fetch-Dest': 'empty'
+          'Sec-Fetch-Dest': 'empty',
+          'User-Agent': voeUA
         }
       };
+      log('Voe HLS extraído: ' + safeUrl(streamUrl));
+      return result;
     });
 }
 
