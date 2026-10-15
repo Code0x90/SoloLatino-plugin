@@ -214,14 +214,100 @@ function extractPlaylists(html, pageUrl) {
   return playlists;
 }
 
-function languageLabel(language) {
-  var lang = String(language || '').toUpperCase();
-  if (lang === 'ESP') return 'Español';
-  if (lang === 'SUB') return 'Subtitulado';
-  return 'Latino';
+
+// Extractor Voe adaptado del método funcional de AnimeAV1 1.2.5.
+var VOE_MARKERS = ['@$', '^^', '~@', '%?', '*~', '!!', '#&'];
+
+function voeRot13(value) {
+  return String(value || '').replace(/[a-zA-Z]/g, function (char) {
+    var code = char.charCodeAt(0);
+    var base = code <= 90 ? 65 : 97;
+    return String.fromCharCode((code - base + 13) % 26 + base);
+  });
 }
 
-function makeStream(url, language) {
+function voeReplaceMarkers(value) {
+  var output = String(value || '');
+  VOE_MARKERS.forEach(function (marker) {
+    output = output.split(marker).join('_');
+  });
+  return output;
+}
+
+function decodeVoePayload(rawValue) {
+  var value = voeRot13(rawValue);
+  value = voeReplaceMarkers(value).split('_').join('');
+  value = atob(value);
+  value = Array.from(value).map(function (char) {
+    return String.fromCharCode((char.charCodeAt(0) - 3 + 256) % 256);
+  }).join('');
+  value = value.split('').reverse().join('');
+  value = atob(value);
+  return JSON.parse(value);
+}
+
+function extractVoe(embedUrl) {
+  return fetchText(embedUrl, { 'Accept': 'text/html,application/xhtml+xml' })
+    .then(function (result) {
+      var html = result.text;
+      var redirect = html.match(/window\.location\.href\s*=\s*['"]([^'"]+)['"]/);
+      if (!redirect) return { html: html, pageUrl: embedUrl };
+      var redirectUrl = redirect[1];
+      log('Voe: redirección JS detectada -> ' + safeUrl(redirectUrl));
+      return fetchText(redirectUrl, { 'Referer': embedUrl, 'Accept': 'text/html,application/xhtml+xml' })
+        .then(function (redirectResult) {
+          return { html: redirectResult.text, pageUrl: embedUrl };
+        });
+    })
+    .then(function (page) {
+      var script = page.html.match(/<script type="application\/json"[^>]*>([\s\S]*?)<\/script>/i);
+      if (!script) throw new Error('No se encontró el JSON del embed Voe.');
+      var jsonText = script[1].trim()
+        .replace(/&amp;/g, '&').replace(/&quot;/g, '"')
+        .replace(/&#34;/g, '"').replace(/&#39;/g, "'")
+        .replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+      var payload;
+      try { payload = JSON.parse(jsonText); }
+      catch (error) { throw new Error('JSON de Voe inválido: ' + error.message); }
+      if (!Array.isArray(payload) || !payload[0]) throw new Error('Voe no devolvió el payload esperado.');
+      var decoded;
+      try { decoded = decodeVoePayload(payload[0]); }
+      catch (error) { throw new Error('No se pudo decodificar Voe: ' + error.message); }
+      var streamUrl = decoded && typeof decoded.source === 'string' ? decoded.source.trim() : '';
+      if (!/^https?:\/\//i.test(streamUrl)) throw new Error('Voe no devolvió una URL HLS HTTP válida.');
+      var origin = new URL(page.pageUrl).origin;
+      return {
+        url: streamUrl,
+        headers: {
+          'User-Agent': UA,
+          'Referer': origin + '/',
+          'Sec-Fetch-Site': 'same-origin',
+          'Sec-Fetch-Mode': 'cors',
+          'Sec-Fetch-Dest': 'empty'
+        }
+      };
+    });
+}
+
+function makeVoeStream(stream, language, mediaType) {
+  return {
+    name: PROVIDER_NAME,
+    title: '',
+    url: stream.url,
+    quality: '📺 Voe 720p\n720p | WEB-DL | ' + (mediaType === 'tv' ? 'Serie' : 'Película') + '\n' + languageLabel(language),
+    headers: stream.headers,
+    type: 'hls'
+  };
+}
+
+function languageLabel(language) {
+  var lang = String(language || '').toUpperCase();
+  if (lang === 'ESP') return '🇪🇸 Español';
+  if (lang === 'SUB') return '🌐 Subtitulado';
+  return '🇲🇽 Latino';
+}
+
+function makeStream(url, language, mediaType) {
   var isMorencius = /^https:\/\/morencius\.com\//i.test(url);
   var headers = {
     'User-Agent': UA,
@@ -232,7 +318,7 @@ function makeStream(url, language) {
     name: PROVIDER_NAME,
     title: '',
     url: url,
-    quality: '📺 SoloLatino\nAuto | WEB-DL | SoloLatino\n' + languageLabel(language),
+    quality: '📺 VidHide\nAuto | WEB-DL | ' + (mediaType === 'tv' ? 'Serie' : 'Película') + '\n' + languageLabel(language),
     headers: headers,
     type: 'hls'
   };
@@ -264,7 +350,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
         return /vidhide/i.test(source.server) || /morencius\.com/i.test(source.url);
       });
       log('Embed69 devolvió ' + sources.length + ' servidores; Vidhide: ' + vidhide.length);
-      if (!vidhide.length) throw new Error('No se encontró Vidhide en Embed69.');
+      if (!vidhide.length) log('No se encontró Vidhide; se continuará intentando resolver los demás servidores.');
 
       // Prefer LAT; fall back to ESP, then SUB. Keep only one language to avoid duplicates.
       var language = ['LAT', 'ESP', 'SUB'].find(function (lang) {
@@ -288,7 +374,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
             if (!playlists.length) log('No se encontró playlist HLS en ' + safeUrl(pageUrl));
             playlists.forEach(function (playlist) {
               if (!streams.some(function (stream) { return stream.url === playlist; })) {
-                streams.push(makeStream(playlist, language));
+                streams.push(makeStream(playlist, language, type));
               }
             });
             return streams;
@@ -297,7 +383,33 @@ function getStreams(tmdbId, mediaType, season, episode) {
             return streams;
           });
         });
-      }, Promise.resolve([]));
+      }, Promise.resolve([])).then(function (streams) {
+        // Voe se resuelve de forma independiente: un fallo de Voe nunca elimina Vidhide.
+        var voeSources = sources.filter(function (source) {
+          return /\bvoe\b/i.test(source.server) || /voe\.sx/i.test(source.url);
+        });
+        var seenVoe = [];
+        voeSources = voeSources.filter(function (source) {
+          if (seenVoe.indexOf(source.url) !== -1) return false;
+          seenVoe.push(source.url);
+          return true;
+        });
+        log('Embed69: fuentes Voe detectadas: ' + voeSources.length);
+        return voeSources.reduce(function (promise, source) {
+          return promise.then(function (currentStreams) {
+            return extractVoe(source.url).then(function (resolved) {
+              if (!currentStreams.some(function (stream) { return stream.url === resolved.url; })) {
+                currentStreams.push(makeVoeStream(resolved, source.lang || language, type));
+              }
+              log('Voe resuelto correctamente a HLS.');
+              return currentStreams;
+            }).catch(function (error) {
+              log('Fallo resolviendo Voe ' + safeUrl(source.url) + ': ' + error.message);
+              return currentStreams;
+            });
+          });
+        }, Promise.resolve(streams));
+      });
     })
     .then(function (streams) {
       log('Resultado: ' + streams.length + ' playlist(s) HLS');
