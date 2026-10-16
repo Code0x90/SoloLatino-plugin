@@ -34,8 +34,8 @@ function fetchText(url, headers) {
       'Accept': 'text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8'
     }, headers || {})
   }).then(function (response) {
+    if (!response.ok) throw new Error('HTTP ' + response.status + ' en ' + safeUrl(url));
     return response.text().then(function (text) {
-      if (!response.ok) throw new Error('HTTP ' + response.status + ' en ' + safeUrl(url));
       return { response: response, text: text };
     });
   });
@@ -57,14 +57,28 @@ function fetchJson(url) {
   });
 }
 
+// Caché en memoria acotada: evita duplicar las dos consultas TMDB en llamadas repetidas.
+var TMDB_CACHE_TTL_MS = 10 * 60 * 1000;
+var TMDB_CACHE_MAX_ENTRIES = 200;
+var tmdbCache = Object.create(null);
+
 function resolveTmdb(tmdbId, mediaType) {
   var type = mediaType === 'movie' ? 'movie' : 'tv';
-  var base = TMDB_BASE + '/' + type + '/' + encodeURIComponent(String(tmdbId));
-  var key = '?api_key=' + encodeURIComponent(TMDB_API_KEY);
-  return Promise.all([
-    fetchJson(base + key),
-    fetchJson(base + '/external_ids' + key)
-  ]).then(function (results) {
+  var cacheKey = type + ':' + String(tmdbId);
+  var now = Date.now();
+  var cached = tmdbCache[cacheKey];
+  if (cached && cached.expiresAt > now) return cached.promise;
+  if (cached) delete tmdbCache[cacheKey];
+
+  var entry = { expiresAt: now + TMDB_CACHE_TTL_MS, promise: null };
+  entry.promise = Promise.resolve().then(function () {
+    var base = TMDB_BASE + '/' + type + '/' + encodeURIComponent(String(tmdbId));
+    var key = '?api_key=' + encodeURIComponent(TMDB_API_KEY);
+    return Promise.all([
+      fetchJson(base + key),
+      fetchJson(base + '/external_ids' + key)
+    ]);
+  }).then(function (results) {
     var details = results[0] || {};
     var external = results[1] || {};
     var imdbId = external.imdb_id;
@@ -76,7 +90,25 @@ function resolveTmdb(tmdbId, mediaType) {
       title: details.title || details.name || 'Título desconocido',
       year: String(details.release_date || details.first_air_date || '').slice(0, 4)
     };
+  }).catch(function (error) {
+    if (tmdbCache[cacheKey] === entry) delete tmdbCache[cacheKey];
+    throw error;
   });
+
+  tmdbCache[cacheKey] = entry;
+  var keys = Object.keys(tmdbCache);
+  if (keys.length > TMDB_CACHE_MAX_ENTRIES) {
+    var oldestKey = null;
+    var oldestExpiry = Infinity;
+    keys.forEach(function (key) {
+      if (key !== cacheKey && tmdbCache[key].expiresAt < oldestExpiry) {
+        oldestExpiry = tmdbCache[key].expiresAt;
+        oldestKey = key;
+      }
+    });
+    if (oldestKey) delete tmdbCache[oldestKey];
+  }
+  return entry.promise;
 }
 
 function buildSlug(imdbId, mediaType, season, episode) {
@@ -119,11 +151,20 @@ function decryptLink(encoded, keyHex) {
 }
 
 function solvePow(challenge, difficulty, salt) {
-  var zeros = '0'.repeat(Math.min(Number(difficulty) || 0, 64));
+  var numericDifficulty = Number(difficulty);
+  if (!Number.isFinite(numericDifficulty) || numericDifficulty < 0 || numericDifficulty > 64) return null;
+  var zeros = '0'.repeat(Math.floor(numericDifficulty));
+  // Reutilizar el prefijo evita recalcular el hash de challenge en cada nonce.
+  var hasher = CryptoJS.algo && CryptoJS.algo.SHA256 && typeof CryptoJS.algo.SHA256.create === 'function'
+    ? CryptoJS.algo.SHA256.create().update(String(challenge))
+    : null;
   // Keep a finite cap to avoid monopolizing Nuvio's JS runtime.
   for (var nonce = 0; nonce < 2000000; nonce++) {
     var candidate = challenge + nonce;
-    if (CryptoJS.SHA256(candidate).toString().indexOf(zeros) === 0) {
+    var hash = hasher
+      ? hasher.clone().update(String(nonce)).finalize().toString()
+      : CryptoJS.SHA256(candidate).toString();
+    if (hash.slice(0, zeros.length) === zeros) {
       return salt ? CryptoJS.SHA256(candidate + salt).toString() : null;
     }
   }
@@ -188,16 +229,19 @@ function unpackPacked(html) {
   return output.join('\n');
 }
 
-function extractPlaylists(html, pageUrl) {
-  var source = String(html || '') + '\n' + unpackPacked(html);
+function extractPlaylists(html) {
+  var htmlText = String(html || '');
+  var source = htmlText + '\n' + unpackPacked(htmlText);
   var playlists = [];
+  var seenPlaylists = new Set();
   function add(value) {
     if (typeof value !== 'string') return;
     var url = value.replace(/\\\//g, '/').trim();
     if (url.charAt(0) === '/' && url.slice(0, 2) !== '//') {
       url = 'https://morencius.com' + url;
     }
-    if (/^https:\/\//i.test(url) && /\.m3u8(?:\?|$)/i.test(url) && playlists.indexOf(url) < 0) {
+    if (/^https:\/\//i.test(url) && /\.m3u8(?:\?|$)/i.test(url) && !seenPlaylists.has(url)) {
+      seenPlaylists.add(url);
       playlists.push(url);
     }
   }
@@ -214,106 +258,6 @@ function extractPlaylists(html, pageUrl) {
   return playlists;
 }
 
-
-// Extractor Voe adaptado del método funcional de AnimeAV1 1.2.5.
-var VOE_MARKERS = ['@$', '^^', '~@', '%?', '*~', '!!', '#&'];
-
-function voeRot13(value) {
-  return String(value || '').replace(/[a-zA-Z]/g, function (char) {
-    var code = char.charCodeAt(0);
-    var base = code <= 90 ? 65 : 97;
-    return String.fromCharCode((code - base + 13) % 26 + base);
-  });
-}
-
-function voeReplaceMarkers(value) {
-  var output = String(value || '');
-  VOE_MARKERS.forEach(function (marker) {
-    output = output.split(marker).join('_');
-  });
-  return output;
-}
-
-function decodeVoePayload(rawValue) {
-  var value = voeRot13(rawValue);
-  value = voeReplaceMarkers(value).split('_').join('');
-  value = atob(value);
-  value = Array.from(value).map(function (char) {
-    return String.fromCharCode((char.charCodeAt(0) - 3 + 256) % 256);
-  }).join('');
-  value = value.split('').reverse().join('');
-  value = atob(value);
-  return JSON.parse(value);
-}
-
-function extractVoe(embedUrl) {
-  // Replica el flujo HTTP de AnimeAV1 1.2.5 exclusivamente para Voe:
-  // mismo User-Agent, sin añadir Accept ni Referer a la petición de la redirección.
-  var voeUA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
-  function requestVoe(url) {
-    return fetch(url, { headers: { 'User-Agent': voeUA } }).then(function (response) {
-      return response.text().then(function (text) {
-        if (!response.ok) throw new Error('HTTP error! Status: ' + response.status + ' en ' + safeUrl(url));
-        return text;
-      });
-    });
-  }
-
-  return requestVoe(embedUrl)
-    .then(function (html) {
-      // fetch no ejecuta JavaScript: seguir window.location.href manualmente,
-      // igual que el extractor de AnimeAV1.
-      var redirect = html.match(/window\.location\.href\s*=\s*['"]([^'"]+)['"]/);
-      if (!redirect) return { html: html, pageUrl: embedUrl };
-      var redirectUrl = redirect[1];
-      log('Voe: redirección JS detectada -> ' + safeUrl(redirectUrl));
-      return requestVoe(redirectUrl).then(function (redirectHtml) {
-        return { html: redirectHtml, pageUrl: embedUrl };
-      });
-    })
-    .then(function (page) {
-      // Mantener el mismo selector y decodificación del resolver funcional.
-      var script = page.html.match(/<script type="application\/json"[^>]*>([\s\S]*?)<\/script>/);
-      if (!script) throw new Error('No se encontró el <script type="application/json"> en el embed de Voe');
-      var jsonText = script[1].trim()
-        .replace(/&amp;/g, '&').replace(/&quot;/g, '"')
-        .replace(/&#34;/g, '"').replace(/&#39;/g, "'")
-        .replace(/&lt;/g, '<').replace(/&gt;/g, '>');
-      var payload;
-      try { payload = JSON.parse(jsonText); }
-      catch (error) { throw new Error('No se pudo parsear el array JSON del embed de Voe: ' + error.message); }
-      if (!Array.isArray(payload) || !payload[0]) throw new Error('El embed de Voe no trajo el payload esperado');
-      var decoded;
-      try { decoded = decodeVoePayload(payload[0]); }
-      catch (error) { throw new Error('No se pudo decodificar el payload de Voe: ' + error.message); }
-      var streamUrl = decoded && typeof decoded.source === 'string' ? decoded.source.trim() : '';
-      if (!/^https?:\/\//i.test(streamUrl)) throw new Error('El payload de Voe no trajo una URL HLS válida');
-      var origin = new URL(embedUrl).origin;
-      var result = {
-        url: streamUrl,
-        headers: {
-          'Referer': origin + '/',
-          'Sec-Fetch-Site': 'same-origin',
-          'Sec-Fetch-Mode': 'cors',
-          'Sec-Fetch-Dest': 'empty',
-          'User-Agent': voeUA
-        }
-      };
-      log('Voe HLS extraído: ' + safeUrl(streamUrl));
-      return result;
-    });
-}
-
-function makeVoeStream(stream, language, mediaType) {
-  return {
-    name: PROVIDER_NAME,
-    title: '',
-    url: stream.url,
-    quality: '📺 Voe 720p\n720p | WEB-DL | ' + (mediaType === 'tv' ? 'Serie' : 'Película') + '\n' + languageLabel(language),
-    headers: stream.headers,
-    type: 'hls'
-  };
-}
 
 function languageLabel(language) {
   var lang = String(language || '').toUpperCase();
@@ -342,6 +286,15 @@ function makeStream(url, language, mediaType) {
 function getStreams(tmdbId, mediaType, season, episode) {
   var type = String(mediaType || '').toLowerCase();
   if (!tmdbId || (type !== 'movie' && type !== 'tv')) return Promise.resolve([]);
+  if (type === 'tv') {
+    var seasonNumber = Number(season);
+    var episodeNumber = Number(episode);
+    if (!Number.isInteger(seasonNumber) || seasonNumber < 0 ||
+        !Number.isInteger(episodeNumber) || episodeNumber < 1) {
+      log('Temporada o episodio inválido; se omiten las consultas de red.');
+      return Promise.resolve([]);
+    }
+  }
 
   log('TMDB ' + type + ' ' + tmdbId + (type === 'tv' ? ' S' + season + 'E' + episode : ''));
   var slug;
@@ -364,66 +317,55 @@ function getStreams(tmdbId, mediaType, season, episode) {
       var vidhide = sources.filter(function (source) {
         return /vidhide/i.test(source.server) || /morencius\.com/i.test(source.url);
       });
-      log('Embed69 devolvió ' + sources.length + ' servidores; Vidhide: ' + vidhide.length);
-      if (!vidhide.length) log('No se encontró Vidhide; se continuará intentando resolver los demás servidores.');
+      log('Embed69 devolvió ' + sources.length + ' servidores; VidHide: ' + vidhide.length);
+      if (!vidhide.length) {
+        log('No se encontró una fuente VidHide compatible.');
+        return [];
+      }
 
       // Prefer LAT; fall back to ESP, then SUB. Keep only one language to avoid duplicates.
-      var language = ['LAT', 'ESP', 'SUB'].find(function (lang) {
-        return vidhide.some(function (source) { return source.lang.toUpperCase() === lang; });
+      var languagePriority = ['LAT', 'ESP', 'SUB'];
+      var language = languagePriority.find(function (lang) {
+        return vidhide.some(function (source) {
+          return String(source.lang || '').toUpperCase() === lang;
+        });
       });
-      var selected = vidhide.filter(function (source) { return source.lang.toUpperCase() === language; });
+      var selected = vidhide.filter(function (source) {
+        return String(source.lang || '').toUpperCase() === language;
+      });
       var uniquePages = [];
+      var seenPages = new Set();
       selected.forEach(function (source) {
-        if (uniquePages.indexOf(source.url) < 0) uniquePages.push(source.url);
+        if (!seenPages.has(source.url)) {
+          seenPages.add(source.url);
+          uniquePages.push(source.url);
+        }
       });
-      log('Idioma seleccionado: ' + language + '; páginas Vidhide: ' + uniquePages.length);
+      log('Idioma seleccionado: ' + language + '; páginas VidHide: ' + uniquePages.length);
 
-      return uniquePages.reduce(function (promise, pageUrl) {
-        return promise.then(function (streams) {
-          return fetchText(pageUrl, {
-            'Referer': EMBED69_REFERER,
-            'Accept': 'text/html,application/xhtml+xml'
-          }).then(function (page) {
-            log('Vidhide ' + safeUrl(pageUrl) + ' -> HTTP 200');
-            var playlists = extractPlaylists(page.text, pageUrl);
-            if (!playlists.length) log('No se encontró playlist HLS en ' + safeUrl(pageUrl));
-            playlists.forEach(function (playlist) {
-              if (!streams.some(function (stream) { return stream.url === playlist; })) {
-                streams.push(makeStream(playlist, language, type));
-              }
-            });
-            return streams;
-          }).catch(function (error) {
-            log('Fallo leyendo Vidhide ' + safeUrl(pageUrl) + ': ' + error.message);
-            return streams;
+      // Consultar las páginas en paralelo reduce la latencia cuando hay varios mirrors.
+      return Promise.all(uniquePages.map(function (pageUrl) {
+        return fetchText(pageUrl, {
+          'Referer': EMBED69_REFERER,
+          'Accept': 'text/html,application/xhtml+xml'
+        }).then(function (page) {
+          log('VidHide ' + safeUrl(pageUrl) + ' -> HTTP 200');
+          return extractPlaylists(page.text);
+        }).catch(function (error) {
+          log('Fallo leyendo VidHide ' + safeUrl(pageUrl) + ': ' + error.message);
+          return [];
+        });
+      })).then(function (playlistGroups) {
+        var streams = [];
+        var seenStreams = new Set();
+        playlistGroups.forEach(function (playlists) {
+          playlists.forEach(function (playlist) {
+            if (seenStreams.has(playlist)) return;
+            seenStreams.add(playlist);
+            streams.push(makeStream(playlist, language, type));
           });
         });
-      }, Promise.resolve([])).then(function (streams) {
-        // Voe se resuelve de forma independiente: un fallo de Voe nunca elimina Vidhide.
-        var voeSources = sources.filter(function (source) {
-          return /\bvoe\b/i.test(source.server) || /voe\.sx/i.test(source.url);
-        });
-        var seenVoe = [];
-        voeSources = voeSources.filter(function (source) {
-          if (seenVoe.indexOf(source.url) !== -1) return false;
-          seenVoe.push(source.url);
-          return true;
-        });
-        log('Embed69: fuentes Voe detectadas: ' + voeSources.length);
-        return voeSources.reduce(function (promise, source) {
-          return promise.then(function (currentStreams) {
-            return extractVoe(source.url).then(function (resolved) {
-              if (!currentStreams.some(function (stream) { return stream.url === resolved.url; })) {
-                currentStreams.push(makeVoeStream(resolved, source.lang || language, type));
-              }
-              log('Voe resuelto correctamente a HLS.');
-              return currentStreams;
-            }).catch(function (error) {
-              log('Fallo resolviendo Voe ' + safeUrl(source.url) + ': ' + error.message);
-              return currentStreams;
-            });
-          });
-        }, Promise.resolve(streams));
+        return streams;
       });
     })
     .then(function (streams) {
