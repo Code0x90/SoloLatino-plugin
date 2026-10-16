@@ -1,47 +1,46 @@
-# SoloLatino para Nuvio — v1.0.5
+# SoloLatino para Nuvio — v1.0.6
 
-Plugin de prueba llamado SoloLatino. Extrae las playlists HLS mediante la ruta directa de Embed69 y devuelve únicamente esa fuente; no usa `kino.browser.capture`. La presentación sigue el formato de AnimeAV1: etiqueta de tres líneas en `quality`, `title` vacío y `type: "hls"`.
+Proveedor para películas y series que resuelve el identificador de IMDb mediante TMDB y obtiene playlists HLS de VidHide desde la ruta directa de Embed69. **Solo procesa VidHide**; los demás servidores se ignoran. No usa `kino.browser.capture`.
 
 ## Flujo
 
-`TMDB ID → IMDb ID → https://embed69.org/f/{slug} → SoloLatino → playlist HLS`
+`TMDB ID → IMDb ID → https://embed69.org/f/{slug} → VidHide → playlist HLS`
 
-Para series, el slug probado por el script es `{imdbId}-{temporada}x{episodio con dos dígitos}`. La ruta directa para películas fue comprobada con TMDB `299536` (Avengers: Infinity War). La ruta directa de series aún debe validarse dentro de Nuvio.
+Para películas se usa el IMDb ID (`/f/tt...`). Para series se usa `{imdbId}-{temporada}x{episodio con dos dígitos}`, por ejemplo `tt1234567-2x03`.
+
+## Mejoras en v1.0.6
+
+- Eliminada toda la implementación auxiliar de servidores que no sean VidHide.
+- Consultas de páginas VidHide en paralelo, conservando el orden de los resultados y eliminando URLs duplicadas.
+- Resolución del challenge de Embed69 más eficiente al reutilizar el hash del prefijo cuando la implementación de CryptoJS admite clonación incremental.
+- Caché de metadatos TMDB en memoria por 10 minutos, limitada a 200 entradas, para evitar peticiones repetidas en consultas cercanas.
+- Validación de temporada y episodio antes de hacer peticiones de red.
+- Añadidas pruebas offline para películas, series, selección de idioma, deduplicación, errores, caché y concurrencia.
 
 ## Archivos
 
-- `manifest.json`: repositorio de plugins de Nuvio.
-- `providers/sololatino.js`: proveedor que exporta `getStreams(tmdbId, mediaType, season, episode)`.
-- `tests/test-provider.js`: prueba local opcional con Node.js.
+- `manifest.json`: manifiesto del plugin de Nuvio.
+- `providers/sololatino.js`: exporta `getStreams(tmdbId, mediaType, season, episode)`.
+- `tests/test-provider.js`: suite local offline con respuestas de red simuladas y cifrado AES de prueba.
 
-## Dependencia del runtime
+## Dependencias
 
-Nuvio debe proporcionar `crypto-js` y `fetch`, según el entorno habitual de plugins. El proveedor no usa `Buffer`, módulos nativos de Node ni `kino.browser.capture`.
+Nuvio debe proporcionar `fetch`; el plugin usa `crypto-js`. Para ejecutar la suite local se necesita Node.js 18 o posterior. Los tests interceptan las peticiones y **no necesitan acceso a TMDB ni Embed69**.
 
-## Prueba local
-
-En Node.js, instala la dependencia de prueba:
+## Pruebas
 
 ```sh
 npm install
-node tests/test-provider.js movie 299536
-node tests/test-provider.js tv TMDB_ID 1 1
+npm test
+npm run test:functionality
+npm run test:perf
 ```
 
-La prueba solicita directamente el flujo de red y puede fallar si Embed69 cambia su HTML, si el identificador directo no existe o si la URL temporal deja de estar disponible.
+La suite offline valida el flujo del proveedor, incluyendo la decodificación de los enlaces de prueba, pero no puede confirmar que los HTML reales de TMDB/Embed69 sigan iguales. Para esa comprobación se requiere una prueba en vivo desde un entorno con conexión, sin incluir claves privadas en los logs.
 
-## Instalación
+## Streams devueltos
 
-Publica `manifest.json` y la carpeta `providers/` en un repositorio público. En Nuvio, agrega la URL RAW del `manifest.json` desde la sección de repositorios/plugins.
-
-## Nota sobre TMDB
-
-La clave TMDB proporcionada está incrustada para esta prueba solicitada. Al ser parte del JavaScript descargable, cualquiera que tenga acceso al código podrá verla; si se publica el repositorio, considera rotarla y moverla a ajustes del plugin cuando la prueba inicial termine.
-
-
-## Presentación de las fuentes (v1.0.5)
-
-Cada stream devuelve `title: ""` y este formato en `quality`, siguiendo el patrón de AnimeAV1:
+Cada resultado usa `title: ""`, `type: "hls"` y la siguiente estructura en `quality`:
 
 ```text
 📺 VidHide
@@ -49,9 +48,8 @@ Auto | WEB-DL | Película o Serie
 🇲🇽 Latino
 ```
 
-La segunda línea muestra `Película` o `Serie` según el contenido. La tercera línea incluye la bandera correspondiente al idioma: `🇲🇽 Latino`, `🇪🇸 Español` o `🌐 Subtitulado`. La calidad se mantiene como `Auto`; no se anuncia 1080p sin haber comprobado la variante de reproducción. Los streams declaran `type: "hls"`.
+El idioma prioriza `LAT`, luego `ESP` y finalmente `SUB`. La calidad se etiqueta `Auto` porque no se inspeccionan todas las variantes de la playlist.
 
+## Nota sobre la clave TMDB
 
-## Voe (v1.0.5)
-
-Integra el extractor Voe adaptado del método funcional de AnimeAV1: sigue la redirección JavaScript, decodifica el payload JSON y devuelve la URL HLS con sus cabeceras. Los errores de Voe no impiden devolver los streams de Vidhide.
+La clave TMDB actual está incrustada en el JavaScript del plugin. Cualquier persona con acceso al código publicado puede leerla; si se publica el repositorio, usa una clave restringida y considera rotarla.

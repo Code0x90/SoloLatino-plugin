@@ -1,11 +1,12 @@
 {
   "name": "sololatino-nuvio-plugin",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "private": true,
-  "description": "Nuvio provider for SoloLatino with Vidhide and Voe HLS extraction",
+  "description": "Nuvio provider for SoloLatino with concurrent VidHide HLS extraction",
   "scripts": {
-    "test:movie": "node tests/test-provider.js movie 299536",
-    "test:tv": "node tests/test-provider.js tv 106646 1 1"
+    "test": "node --test tests/test-provider.js",
+    "test:functionality": "node --test tests/test-provider.js",
+    "test:perf": "node --test --test-name-pattern=\"concurrencia|rendimiento\" tests/test-provider.js"
   },
   "dependencies": {
     "crypto-js": "^4.2.0"

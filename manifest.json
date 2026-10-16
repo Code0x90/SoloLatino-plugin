@@ -1,12 +1,12 @@
 {
   "name": "SoloLatino",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "scrapers": [
     {
       "id": "sololatino",
       "name": "SoloLatino",
-      "description": "Proveedor SoloLatino para películas y series. Devuelve únicamente streams HLS compatibles.",
-      "version": "1.0.5",
+      "description": "Proveedor SoloLatino para películas y series. Devuelve streams HLS compatibles de VidHide.",
+      "version": "1.0.6",
       "author": "Code0x90",
       "supportedTypes": [
         "movie",
