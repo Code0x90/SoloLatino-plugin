@@ -289,7 +289,9 @@ function extractStreamwishPlaylist(html, pageUrl) {
   var candidates = [resolve(links.hls3), resolve(links.hls2), resolve(links.hls4)];
   for (var i = 0; i < candidates.length; i++) {
     if (candidates[i] && /^https?:\/\//i.test(candidates[i]) && /(?:master\.(?:m3u8|txt)|\.m3u8)(?:\?|$)/i.test(candidates[i])) {
-      return { url: candidates[i], origin: (candidates[i].match(/^(https?:\/\/[^/]+)/i) || [null, pageOrigin])[1], referer: pageUrl };
+      // El CDN entrega el manifiesto, pero el origen HTTP del reproductor es Vibuxer.
+      // No enviar Origin igual al host del CDN: puede provocar 403 en los segmentos.
+      return { url: candidates[i], origin: pageOrigin, referer: pageUrl };
     }
   }
   return null;
