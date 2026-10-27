@@ -1,12 +1,12 @@
 {
   "name": "SoloLatino",
-  "version": "1.2.0",
+  "version": "1.2.2",
   "scrapers": [
     {
       "id": "sololatino",
       "name": "SoloLatino",
-      "description": "SoloLatino: StreamWish primero, VidHide después; prioriza español latino, usa inglés como fallback e ignora español de España. HLS4 principal con HLS3/HLS2 de respaldo.",
-      "version": "1.2.0",
+      "description": "SoloLatino: StreamWish primero, VidHide después; prioriza español latino, usa inglés como fallback e ignora español de España. HLS4 principal con HLS3/HLS2 de respaldo; experimento de manifiesto maestro único para selección de calidad en el reproductor.",
+      "version": "1.2.2",
       "author": "Code0x90",
       "supportedTypes": [
         "movie",
