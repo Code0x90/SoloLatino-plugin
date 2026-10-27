@@ -1,11 +1,16 @@
-# SoloLatino 1.0.9
+# SoloLatino 1.2.0 — consolidación de fuentes
 
-Versión de diagnóstico para probar exclusivamente StreamWish en Nuvio/Kino. VidHide está deshabilitado temporalmente desde `ENABLE_VIDHIDE = false`; su extractor y lógica se conservan en el código, sin modificarlos.
+## Prioridad de resolución y listado
+
+1. **StreamWish**: se lista primero. Prueba HLS4 como principal y pasa a HLS3 y HLS2 si el manifiesto no se puede usar. Expone las variantes detectadas ordenadas por calidad.
+2. **VidHide**: se lista después de las variantes StreamWish, usando el extractor conservado y habilitado.
+
+Los dos proveedores de un mismo resultado se mantienen en un solo idioma: **español latino primero**. Si no hay fuentes latinoamericanas o no se consigue resolver ninguna, se intenta **inglés**. Las fuentes en español de España, subtitulado genérico y otros idiomas se ignoran.
 
 ## Flujo
 
-`TMDB ID → IMDb ID → Embed69 → páginas StreamWish → manifiesto HLS`
+`TMDB ID → IMDb ID → Embed69 → selección LAT/ENG → StreamWish HLS4/HLS3/HLS2 + VidHide → deduplicación y orden`
 
-## Nota de prueba
+## Verificaciones
 
-Esta versión omite las fuentes VidHide para que el reproductor no las seleccione durante las pruebas. Cuando se termine el diagnóstico, se puede reactivar cambiando `ENABLE_VIDHIDE` a `true`. La reproducción de StreamWish debe verificarse en Nuvio/Kino con enlaces reales.
+La suite `npm test` valida la normalización de idioma, el orden HLS, el análisis de variantes y la combinación StreamWish/VidHide. La reproducción real debe seguir comprobándose en Nuvio/Kino, porque el estado del CDN cambia por enlace y mirror.
