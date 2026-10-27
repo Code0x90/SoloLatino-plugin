@@ -1,14 +1,12 @@
 /*
  * SoloLatino provider for Nuvio
- * Flow: TMDB ID -> IMDb ID -> Embed69 direct route -> Vidhide -> HLS
+ * Flow: TMDB ID -> IMDb ID -> Embed69 -> StreamWish HLS -> VidHide HLS
  * Runtime dependencies provided by Nuvio: fetch, require('crypto-js')
  */
 
 const CryptoJS = require('crypto-js');
 
 const PROVIDER_NAME = 'SoloLatino';
-// Desactivación temporal para diagnosticar StreamWish sin alterar el extractor VidHide.
-const ENABLE_VIDHIDE = false;
 const TMDB_API_KEY = '56db0ec297530920213e1503706b81ff';
 const TMDB_BASE = 'https://api.themoviedb.org/3';
 const EMBED69_BASE = 'https://embed69.org';
@@ -173,6 +171,45 @@ function solvePow(challenge, difficulty, salt) {
   return null;
 }
 
+function normalizeLanguage(value) {
+  var raw = String(value == null ? '' : value).trim().toUpperCase();
+  if (!raw) return 'LAT';
+  raw = raw.replace(/Á/g, 'A').replace(/É/g, 'E').replace(/Í/g, 'I')
+    .replace(/Ó/g, 'O').replace(/Ú/g, 'U').replace(/Ü/g, 'U').replace(/Ñ/g, 'N');
+  var code = raw.replace(/[^A-Z0-9]/g, '');
+
+  // Solo se admiten español latino e inglés; el castellano de España y el subtitulado
+  // genérico se ignoran para no mezclarlos con las pistas de audio solicitadas.
+  if ([
+    'LAT', 'LATINO', 'LATAM', 'LATIN', 'LATINAMERICA', 'LATINOAMERICA',
+    'LATINOAMERICANO', 'LATINOAMERICANA', 'LATINSPANISH', 'SPANISHLATIN',
+    'ESPANOLLATINO', 'ESPANOL LATINO', 'ES419', 'ESLA', 'ESMX', 'ESAR', 'ESCL', 'ESCO', 'ESPE'
+  ].indexOf(code) !== -1 || code.indexOf('ESPANOLLATINO') !== -1 || code.indexOf('LATINSPANISH') !== -1) {
+    return 'LAT';
+  }
+  if ([ 'EN', 'ENG', 'ENGLISH', 'ENUS', 'ENGB', 'INGLES', 'INGLESUS', 'INGLESUK' ].indexOf(code) !== -1 ||
+      code.indexOf('ENGLISH') === 0 || code.indexOf('INGLES') === 0) {
+    return 'ENG';
+  }
+  return null;
+}
+
+function isStreamwishSource(source) {
+  return /streamwish|wish/i.test(String(source && source.server || '')) ||
+    /(?:hglink\.to|vibuxer\.com)/i.test(String(source && source.url || ''));
+}
+
+function isVidHideSource(source) {
+  return /vidhide/i.test(String(source && source.server || '')) ||
+    /morencius\.com/i.test(String(source && source.url || ''));
+}
+
+function selectPreferredLanguage(sources) {
+  if ((sources || []).some(function (source) { return source.lang === 'LAT'; })) return 'LAT';
+  if ((sources || []).some(function (source) { return source.lang === 'ENG'; })) return 'ENG';
+  return null;
+}
+
 function extractEmbed69Sources(html) {
   var keyHex = null;
   var inlineKey = /decryptLink\(server\.link,\s*'(.+?)'\),/.exec(html);
@@ -193,7 +230,9 @@ function extractEmbed69Sources(html) {
 
   var sources = [];
   (Array.isArray(data) ? data : []).forEach(function (section) {
-    var lang = section && section.video_language ? String(section.video_language) : 'LAT';
+    var rawLanguage = section && section.video_language ? String(section.video_language) : 'LAT';
+    var lang = normalizeLanguage(rawLanguage);
+    if (!lang) return;
     (section && Array.isArray(section.sortedEmbeds) ? section.sortedEmbeds : []).forEach(function (item) {
       if (!item || item.servername === 'download') return;
       var url = decryptLink(item.link, keyHex);
@@ -251,7 +290,7 @@ function extractPlaylists(html) {
   if (links) {
     try {
       var config = JSON.parse(links[1]);
-      ['hls4', 'hls2', 'hls3'].forEach(function (key) { add(config[key]); });
+      ['hls4', 'hls3', 'hls2'].forEach(function (key) { add(config[key]); });
     } catch (_) {}
   }
   var fileRegex = /(?:file|src)\s*:\s*["']([^"']+)\s*["']/g;
@@ -261,42 +300,7 @@ function extractPlaylists(html) {
 }
 
 
-// StreamWish/Vibuxer: la configuración de fuentes está dentro de un bloque JS empaquetado.
-// No se ejecuta el código de la página: solo se desempaqueta texto y se extrae `links`.
-function extractStreamwishPlaylist(html, pageUrl) {
-  var htmlText = String(html || '');
-  var source = htmlText + '\n' + unpackPacked(htmlText);
-  var linksMatch = /links\s*=\s*(\{[^{}]*\})/.exec(source);
-  if (!linksMatch) return null;
-
-  var links;
-  try { links = JSON.parse(linksMatch[1].replace(/\\\//g, '/')); }
-  catch (_) { return null; }
-
-  var pageOriginMatch = String(pageUrl || '').match(/^(https?:\/\/[^/]+)/i);
-  var pageOrigin = pageOriginMatch ? pageOriginMatch[1] : 'https://vibuxer.com';
-  function resolve(value) {
-    if (typeof value !== 'string' || !value.trim()) return null;
-    var url = value.trim().replace(/\\\//g, '/');
-    if (/^https?:\/\//i.test(url)) return url;
-    if (url.indexOf('//') === 0) return 'https:' + url;
-    if (url.charAt(0) === '/') return pageOrigin + url;
-    return pageOrigin + '/' + url;
-  }
-
-  // hls3 fue comprobado y entrega segmentos MPEG-TS reales. hls2 queda como respaldo.
-  // hls4 se deja al final: en las pruebas devolvió segmentos de imágenes, pese a HTTP 200.
-  var candidates = [resolve(links.hls3), resolve(links.hls2), resolve(links.hls4)];
-  for (var i = 0; i < candidates.length; i++) {
-    if (candidates[i] && /^https?:\/\//i.test(candidates[i]) && /(?:master\.(?:m3u8|txt)|\.m3u8)(?:\?|$)/i.test(candidates[i])) {
-      // El CDN entrega el manifiesto, pero el origen HTTP del reproductor es Vibuxer.
-      // No enviar Origin igual al host del CDN: puede provocar 403 en los segmentos.
-      return { url: candidates[i], origin: pageOrigin, referer: pageUrl };
-    }
-  }
-  return null;
-}
-
+// Parser activo de StreamWish: consulta HLS4 primero y conserva los fallbacks HLS.
 function makeStreamwishStream(playlist, language, mediaType) {
   var headers = {
     'User-Agent': UA,
@@ -366,11 +370,11 @@ function streamwishCandidates(links, pageUrl) {
     if (url.charAt(0) === '/') return pageOrigin + url;
     return pageOrigin + '/' + url;
   }
-  // Prioridad: hls3. Si falla, probar hls4 (fallback ya confirmado) y luego hls2.
-  // Los tres pasan por el mismo parser de variantes; no se altera la extensión original.
+  // HLS4 es la fuente principal ya validada en reproducción; luego HLS3 y HLS2.
+  // Los tres pasan por el mismo parser de variantes, respetando la extensión original.
   return [
-    { url: resolve(links.hls3), key: 'hls3' },
     { url: resolve(links.hls4), key: 'hls4' },
+    { url: resolve(links.hls3), key: 'hls3' },
     { url: resolve(links.hls2), key: 'hls2' }
   ].filter(function (item) {
     return item.url && /^https?:\/\//i.test(item.url) && /(?:master\.(?:m3u8|txt)|\.m3u8)(?:\?|$)/i.test(item.url);
@@ -379,7 +383,7 @@ function streamwishCandidates(links, pageUrl) {
   });
 }
 
-function resolveStreamwishStreams(html, pageUrl, language, mediaType) {
+function resolveStreamwishStreams(html, pageUrl) {
   var htmlText = String(html || '');
   var source = htmlText + '\n' + unpackPacked(htmlText);
   var linksMatch = /links\s*=\s*(\{[^{}]*\})/.exec(source);
@@ -432,10 +436,7 @@ function streamwishPageUrl(value) {
 
 
 function languageLabel(language) {
-  var lang = String(language || '').toUpperCase();
-  if (lang === 'ESP') return '🇪🇸 Español';
-  if (lang === 'SUB') return '🌐 Subtitulado';
-  return '🇲🇽 Latino';
+  return String(language || '').toUpperCase() === 'ENG' ? '🇺🇸 Inglés' : '🇲🇽 Latino';
 }
 
 function makeStream(url, language, mediaType) {
@@ -453,6 +454,98 @@ function makeStream(url, language, mediaType) {
     headers: headers,
     type: 'hls'
   };
+}
+
+function resolveStreamwishSources(languageSources, language, mediaType) {
+  var pages = [];
+  var seenPages = new Set();
+  (languageSources || []).forEach(function (source) {
+    var pageUrl = streamwishPageUrl(source.url);
+    if (!seenPages.has(pageUrl)) {
+      seenPages.add(pageUrl);
+      pages.push({ url: pageUrl });
+    }
+  });
+
+  // Los mirrors StreamWish se prueban en serie y se detiene al encontrar uno funcional.
+  // Así se evita esperar a mirrors que agotan el tiempo de espera.
+  function tryPage(index) {
+    if (index >= pages.length) return Promise.resolve([]);
+    var item = pages[index];
+    return fetchText(item.url, {
+      'Referer': EMBED69_REFERER,
+      'Accept': 'text/html,application/xhtml+xml'
+    }).then(function (page) {
+      return resolveStreamwishStreams(page.text, item.url);
+    }).then(function (playlists) {
+      if (!playlists.length) {
+        log('StreamWish sin variantes; se prueba el siguiente mirror: ' + safeUrl(item.url));
+        return tryPage(index + 1);
+      }
+      var streams = [];
+      var seenUrls = new Set();
+      playlists.forEach(function (playlist) {
+        if (!playlist || !playlist.url || seenUrls.has(playlist.url)) return;
+        seenUrls.add(playlist.url);
+        streams.push(makeStreamwishStream(playlist, language, mediaType));
+      });
+      if (!streams.length) return tryPage(index + 1);
+      log('StreamWish: se selecciona el primer mirror válido (' + streams.length + ' variante(s)); se omiten los restantes.');
+      return streams;
+    }).catch(function (error) {
+      log('Fallo leyendo StreamWish ' + safeUrl(item.url) + ': ' + error.message);
+      return tryPage(index + 1);
+    });
+  }
+  return tryPage(0);
+}
+
+function resolveVidHideSources(languageSources, language, mediaType) {
+  var pages = [];
+  var seenPages = new Set();
+  (languageSources || []).forEach(function (source) {
+    if (!seenPages.has(source.url)) {
+      seenPages.add(source.url);
+      pages.push(source.url);
+    }
+  });
+
+  // Mantiene el extractor VidHide existente y consulta sus páginas en paralelo.
+  return Promise.all(pages.map(function (pageUrl) {
+    return fetchText(pageUrl, {
+      'Referer': EMBED69_REFERER,
+      'Accept': 'text/html,application/xhtml+xml'
+    }).then(function (page) {
+      log('VidHide ' + safeUrl(pageUrl) + ' -> HTTP 200');
+      return extractPlaylists(page.text);
+    }).catch(function (error) {
+      log('Fallo leyendo VidHide ' + safeUrl(pageUrl) + ': ' + error.message);
+      return [];
+    });
+  })).then(function (playlistGroups) {
+    var streams = [];
+    var seenUrls = new Set();
+    playlistGroups.forEach(function (playlists) {
+      playlists.forEach(function (playlist) {
+        if (seenUrls.has(playlist)) return;
+        seenUrls.add(playlist);
+        streams.push(makeStream(playlist, language, mediaType));
+      });
+    });
+    return streams;
+  });
+}
+
+function combineProviderStreams(streamwishStreams, vidhideStreams) {
+  var combined = [];
+  var seen = new Set();
+  // Orden explícito de catálogo: StreamWish primero, VidHide después.
+  (streamwishStreams || []).concat(vidhideStreams || []).forEach(function (stream) {
+    if (!stream || !stream.url || seen.has(stream.url)) return;
+    seen.add(stream.url);
+    combined.push(stream);
+  });
+  return combined;
 }
 
 function getStreams(tmdbId, mediaType, season, episode) {
@@ -486,112 +579,62 @@ function getStreams(tmdbId, mediaType, season, episode) {
         throw new Error('Embed69 no tiene una entrada directa para ' + slug + '. La búsqueda alternativa en SoloLatino aún no está implementada.');
       }
       var sources = extractEmbed69Sources(result.text);
-      var vidhide = ENABLE_VIDHIDE ? sources.filter(function (source) {
-        return /vidhide/i.test(source.server) || /morencius\.com/i.test(source.url);
-      }) : [];
-      if (!ENABLE_VIDHIDE) log('VidHide deshabilitado temporalmente para pruebas; se omite su resolución.');
-      var streamwish = sources.filter(function (source) {
-        return /streamwish|wish/i.test(source.server) || /(?:hglink\.to|vibuxer\.com)/i.test(source.url);
-      });
-      log('Embed69 devolvió ' + sources.length + ' servidores; VidHide: ' + vidhide.length + '; StreamWish: ' + streamwish.length);
-      if (!vidhide.length && !streamwish.length) {
-        log('No se encontró una fuente VidHide ni StreamWish compatible.');
-        return [];
+      var streamwish = sources.filter(isStreamwishSource);
+      var vidhide = sources.filter(isVidHideSource);
+      log('Embed69 devolvió ' + sources.length + ' servidores; StreamWish: ' + streamwish.length + '; VidHide: ' + vidhide.length);
+
+      var supportedSources = streamwish.concat(vidhide);
+      var preferredLanguage = selectPreferredLanguage(supportedSources);
+      if (!preferredLanguage) {
+        log('No hay fuentes compatibles en español latino ni inglés; se ignoran español de España y otros idiomas.');
+        return { streams: [], language: null, streamwishCount: 0, vidhideCount: 0 };
       }
 
-      // Prefer LAT; fall back to ESP, then SUB. Keep only one language to avoid duplicates.
-      var languagePriority = ['LAT', 'ESP', 'SUB'];
-      var language = languagePriority.find(function (lang) {
-        return vidhide.some(function (source) {
-          return String(source.lang || '').toUpperCase() === lang;
-        }) || streamwish.some(function (source) {
-          return String(source.lang || '').toUpperCase() === lang;
-        });
-      }) || 'LAT';
-      var selected = vidhide.filter(function (source) {
-        return String(source.lang || '').toUpperCase() === language;
-      });
-      var uniquePages = [];
-      var seenPages = new Set();
-      selected.forEach(function (source) {
-        if (!seenPages.has(source.url)) {
-          seenPages.add(source.url);
-          uniquePages.push(source.url);
-        }
-      });
-      log('Idioma seleccionado: ' + language + '; páginas VidHide: ' + uniquePages.length);
+      function resolveLanguage(language) {
+        var streamwishForLanguage = streamwish.filter(function (source) { return source.lang === language; });
+        var vidhideForLanguage = vidhide.filter(function (source) { return source.lang === language; });
+        log('Resolviendo idioma ' + languageLabel(language) + '; StreamWish: ' + streamwishForLanguage.length + '; VidHide: ' + vidhideForLanguage.length);
 
-      // Consultar las páginas en paralelo reduce la latencia cuando hay varios mirrors.
-      return Promise.all(uniquePages.map(function (pageUrl) {
-        return fetchText(pageUrl, {
-          'Referer': EMBED69_REFERER,
-          'Accept': 'text/html,application/xhtml+xml'
-        }).then(function (page) {
-          log('VidHide ' + safeUrl(pageUrl) + ' -> HTTP 200');
-          return extractPlaylists(page.text);
-        }).catch(function (error) {
-          log('Fallo leyendo VidHide ' + safeUrl(pageUrl) + ': ' + error.message);
-          return [];
+        // Se ejecutan ambos proveedores en paralelo para reducir la latencia, pero los
+        // resultados se concatenan en el orden pedido: primero StreamWish y luego VidHide.
+        return Promise.all([
+          resolveStreamwishSources(streamwishForLanguage, language, type),
+          resolveVidHideSources(vidhideForLanguage, language, type)
+        ]).then(function (providerResults) {
+          var streamwishStreams = providerResults[0] || [];
+          var vidhideStreams = providerResults[1] || [];
+          return {
+            streams: combineProviderStreams(streamwishStreams, vidhideStreams),
+            language: language,
+            streamwishCount: streamwishStreams.length,
+            vidhideCount: vidhideStreams.length
+          };
         });
-      })).then(function (playlistGroups) {
-        var streams = [];
-        var seenStreams = new Set();
-        playlistGroups.forEach(function (playlists) {
-          playlists.forEach(function (playlist) {
-            if (seenStreams.has(playlist)) return;
-            seenStreams.add(playlist);
-            streams.push(makeStream(playlist, language, type));
-          });
-        });
+      }
 
-        // StreamWish se procesa aparte para no alterar el extractor VidHide existente.
-        var streamwishPages = [];
-        var seenStreamwishPages = new Set();
-        streamwish.forEach(function (source) {
-          var pageUrl = streamwishPageUrl(source.url);
-          if (!seenStreamwishPages.has(pageUrl)) {
-            seenStreamwishPages.add(pageUrl);
-            streamwishPages.push({ url: pageUrl, lang: source.lang || language || 'LAT' });
-          }
-        });
-        // Resolver mirrors en serie y detenerse en el primero que entregue variantes.
-        // Promise.all esperaba a todos los mirrors, incluso cuando uno ya funcionaba,
-        // dejando la búsqueda abierta mientras otros CDN agotaban el tiempo de espera.
-        function tryStreamwishPage(index) {
-          if (index >= streamwishPages.length) return Promise.resolve(streams);
-          var item = streamwishPages[index];
-          return fetchText(item.url, {
-            'Referer': EMBED69_REFERER,
-            'Accept': 'text/html,application/xhtml+xml'
-          }).then(function (page) {
-            return resolveStreamwishStreams(page.text, item.url, item.lang, type);
-          }).then(function (playlists) {
-            if (!playlists.length) {
-              log('StreamWish sin variantes; se prueba el siguiente mirror: ' + safeUrl(item.url));
-              return tryStreamwishPage(index + 1);
-            }
-            var added = 0;
-            playlists.forEach(function (playlist) {
-              if (seenStreams.has(playlist.url)) return;
-              seenStreams.add(playlist.url);
-              streams.push(makeStreamwishStream(playlist, item.lang, type));
-              added++;
-            });
-            if (added > 0) {
-              log('StreamWish: se selecciona el primer mirror válido (' + added + ' variante(s)); se omiten los restantes para evitar esperas.');
-              return streams;
-            }
-            return tryStreamwishPage(index + 1);
-          }).catch(function (error) {
-            log('Fallo leyendo StreamWish ' + safeUrl(item.url) + ': ' + error.message);
-            return tryStreamwishPage(index + 1);
-          });
+      // Prioridad de catálogo/idioma: latino antes que inglés. Si las fuentes LAT no
+      // se encuentran o no se pueden resolver, se intenta inglés; ESP nunca se resuelve.
+      var languageOrder = preferredLanguage === 'LAT' ? ['LAT', 'ENG'] : ['ENG'];
+      function tryLanguage(index) {
+        if (index >= languageOrder.length) {
+          return Promise.resolve({ streams: [], language: null, streamwishCount: 0, vidhideCount: 0 });
         }
-        return tryStreamwishPage(0);
-      });
+        var language = languageOrder[index];
+        return resolveLanguage(language).then(function (resolved) {
+          if (resolved.streams.length || index + 1 >= languageOrder.length) return resolved;
+          log('No se resolvieron fuentes en español latino; se intenta inglés.');
+          return tryLanguage(index + 1);
+        });
+      }
+      return tryLanguage(0);
     })
-    .then(function (streams) {
-      log('Resultado: ' + streams.length + ' playlist(s) HLS');
+    .then(function (result) {
+      var streams = Array.isArray(result) ? result : result.streams;
+      var language = Array.isArray(result) ? null : result.language;
+      var swCount = Array.isArray(result) ? 0 : result.streamwishCount;
+      var vhCount = Array.isArray(result) ? 0 : result.vidhideCount;
+      log('Idioma seleccionado: ' + (language || 'ninguno') + '; StreamWish: ' + swCount + '; VidHide: ' + vhCount);
+      log('Resultado: ' + streams.length + ' playlist(s) HLS; StreamWish primero, VidHide después.');
       return streams;
     })
     .catch(function (error) {
