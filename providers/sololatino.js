@@ -300,7 +300,7 @@ function extractPlaylists(html) {
 }
 
 
-// Parser experimental de StreamWish: entrega el manifiesto maestro como una sola fuente.
+// Parser activo de StreamWish: consulta HLS4 primero y conserva los fallbacks HLS.
 function makeStreamwishStream(playlist, language, mediaType) {
   var headers = {
     'User-Agent': UA,
@@ -318,9 +318,9 @@ function makeStreamwishStream(playlist, language, mediaType) {
   };
 }
 
-// Lee el manifiesto maestro para validar que contiene variantes. En el modo experimental
-// no las expone por separado: devuelve el maestro original para que el reproductor HLS
-// gestione Auto y la selección manual de calidad.
+// Lee el manifiesto maestro y reproduce el comportamiento esencial de M3u8Helper:
+// expone las variantes de calidad como streams separados, sin cambiar las extensiones
+// .txt que usa el CDN ni construir URLs de manifiesto que no existen.
 function parseStreamwishMaster(text, masterUrl) {
   var lines = String(text || '').replace(/^\uFEFF/, '').split(/\r?\n/).map(function (line) { return line.trim(); });
   if (!lines.some(function (line) { return line === '#EXTM3U'; })) return [];
@@ -411,15 +411,14 @@ function resolveStreamwishStreams(html, pageUrl) {
         else throw new Error('Manifiesto maestro sin variantes');
       }
       log('StreamWish ' + candidate.key + ' HTTP 200; variantes HLS: ' + variants.length);
-      // Entregar el manifiesto maestro sin modificarlo permite que Kino elija calidad
-      // dentro del reproductor. No se fabrican URLs ni se pierde el token del maestro.
-      return [{
-        url: candidate.url,
-        quality: 'Auto',
-        origin: candidate.origin,
-        referer: candidate.referer,
-        master: true
-      }];
+      return variants.map(function (variant) {
+        return {
+          url: variant.url,
+          quality: variant.quality,
+          origin: candidate.origin,
+          referer: candidate.referer
+        };
+      });
     }).catch(function (error) {
       log('StreamWish ' + candidate.key + ' no disponible: ' + error.message);
       return tryCandidate(index + 1);
