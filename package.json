@@ -1,8 +1,8 @@
 {
   "name": "sololatino-nuvio-plugin",
-  "version": "1.2.3",
+  "version": "1.2.4",
   "private": true,
-  "description": "Nuvio provider for SoloLatino: StreamWish HLS4-first with HLS fallbacks; VidHide controlled by ENABLE_VIDHIDE switch.",
+  "description": "Nuvio provider for SoloLatino: StreamWish HLS4-first with HLS fallbacks; only exposes 1080p and 720p; VidHide controlled by ENABLE_VIDHIDE switch.",
   "scripts": {
     "test": "node --test tests/test-provider.js"
   },

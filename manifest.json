@@ -1,12 +1,12 @@
 {
   "name": "SoloLatino",
-  "version": "1.2.3",
+  "version": "1.2.4",
   "scrapers": [
     {
       "id": "sololatino",
       "name": "SoloLatino",
-      "description": "SoloLatino: StreamWish primero, HLS4 principal con HLS3/HLS2 de respaldo. VidHide se controla con ENABLE_VIDHIDE.",
-      "version": "1.2.3",
+      "description": "SoloLatino: StreamWish HLS4-first; solo muestra 1080p y 720p. VidHide controlado por ENABLE_VIDHIDE.",
+      "version": "1.2.4",
       "author": "Code0x90",
       "supportedTypes": [
         "movie",
