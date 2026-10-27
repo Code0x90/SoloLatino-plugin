@@ -303,14 +303,116 @@ function makeStreamwishStream(playlist, language, mediaType) {
     'Referer': playlist.referer || 'https://vibuxer.com/',
     'Origin': playlist.origin || 'https://vibuxer.com'
   };
+  var quality = playlist.quality || 'Auto';
   return {
     name: PROVIDER_NAME,
     title: '',
     url: playlist.url,
-    quality: '📺 StreamWish\nAuto | HLS | ' + (mediaType === 'tv' ? 'Serie' : 'Película') + '\n' + languageLabel(language),
+    quality: '📺 StreamWish\n' + quality + ' | HLS | ' + (mediaType === 'tv' ? 'Serie' : 'Película') + '\n' + languageLabel(language),
     headers: headers,
     type: 'hls'
   };
+}
+
+// Lee el manifiesto maestro y reproduce el comportamiento esencial de M3u8Helper:
+// expone las variantes de calidad como streams separados, sin cambiar las extensiones
+// .txt que usa el CDN ni construir URLs de manifiesto que no existen.
+function parseStreamwishMaster(text, masterUrl) {
+  var lines = String(text || '').replace(/^\uFEFF/, '').split(/\r?\n/).map(function (line) { return line.trim(); });
+  if (!lines.some(function (line) { return line === '#EXTM3U'; })) return [];
+  var variants = [];
+  for (var i = 0; i < lines.length; i++) {
+    if (lines[i].indexOf('#EXT-X-STREAM-INF:') !== 0) continue;
+    var info = lines[i];
+    var path = '';
+    for (var j = i + 1; j < lines.length; j++) {
+      if (!lines[j] || lines[j].charAt(0) === '#') continue;
+      path = lines[j];
+      break;
+    }
+    if (!path) continue;
+    var absolute;
+    try { absolute = new URL(path, masterUrl).toString(); }
+    catch (_) { continue; }
+    var resolution = /RESOLUTION=\d+x(\d+)/i.exec(info);
+    var height = resolution ? Number(resolution[1]) : 0;
+    var quality = height >= 1000 ? '1080p' : height >= 700 ? '720p' : height >= 450 ? '480p' : 'Auto';
+    variants.push({ url: absolute, quality: quality, height: height });
+  }
+  variants.sort(function (a, b) { return b.height - a.height; });
+  var seen = new Set();
+  return variants.filter(function (variant) {
+    if (seen.has(variant.url)) return false;
+    seen.add(variant.url);
+    return true;
+  });
+}
+
+function streamwishCandidates(links, pageUrl) {
+  var pageOriginMatch = String(pageUrl || '').match(/^(https?:\/\/[^/]+)/i);
+  var pageOrigin = pageOriginMatch ? pageOriginMatch[1] : 'https://vibuxer.com';
+  function resolve(value) {
+    if (typeof value !== 'string' || !value.trim()) return null;
+    var url = value.trim().replace(/\\\//g, '/');
+    if (/^https?:\/\//i.test(url)) return url;
+    if (url.indexOf('//') === 0) return 'https:' + url;
+    if (url.charAt(0) === '/') return pageOrigin + url;
+    return pageOrigin + '/' + url;
+  }
+  // hls3 fue verificado con segmentos MPEG-TS reales. Probamos las alternativas
+  // en orden y validamos la respuesta HTTP antes de entregar una fuente a Kino/Nuvio.
+  return [
+    { url: resolve(links.hls3), key: 'hls3' },
+    { url: resolve(links.hls2), key: 'hls2' },
+    { url: resolve(links.hls4), key: 'hls4' }
+  ].filter(function (item) {
+    return item.url && /^https?:\/\//i.test(item.url) && /(?:master\.(?:m3u8|txt)|\.m3u8)(?:\?|$)/i.test(item.url);
+  }).map(function (item) {
+    return { url: item.url, key: item.key, origin: pageOrigin, referer: pageUrl };
+  });
+}
+
+function resolveStreamwishStreams(html, pageUrl, language, mediaType) {
+  var htmlText = String(html || '');
+  var source = htmlText + '\n' + unpackPacked(htmlText);
+  var linksMatch = /links\s*=\s*(\{[^{}]*\})/.exec(source);
+  if (!linksMatch) return Promise.resolve([]);
+  var links;
+  try { links = JSON.parse(linksMatch[1].replace(/\\\//g, '/')); }
+  catch (_) { return Promise.resolve([]); }
+
+  var candidates = streamwishCandidates(links, pageUrl);
+  function tryCandidate(index) {
+    if (index >= candidates.length) return Promise.resolve([]);
+    var candidate = candidates[index];
+    return fetchText(candidate.url, {
+      'Referer': candidate.referer,
+      'Origin': candidate.origin,
+      'Accept': 'application/vnd.apple.mpegurl,application/x-mpegURL,text/plain,*/*'
+    }).then(function (result) {
+      var body = result.text || '';
+      if (!/^\s*#EXTM3U\b/m.test(body)) throw new Error('Respuesta sin #EXTM3U');
+      var variants = parseStreamwishMaster(body, candidate.url);
+      if (!variants.length) {
+        // Si ya es una lista multimedia, se entrega directamente.
+        if (/^\s*#EXTINF:/m.test(body)) variants = [{ url: candidate.url, quality: 'Auto', height: 0 }];
+        else throw new Error('Manifiesto maestro sin variantes');
+      }
+      log('StreamWish ' + candidate.key + ' HTTP 200; variantes HLS: ' + variants.length);
+      return variants.map(function (variant) {
+        return {
+          url: variant.url,
+          quality: variant.quality,
+          origin: candidate.origin,
+          referer: candidate.referer
+        };
+      });
+    }).catch(function (error) {
+      log('StreamWish ' + candidate.key + ' no disponible: ' + error.message);
+      return tryCandidate(index + 1);
+    });
+  }
+  return tryCandidate(0);
 }
 
 function streamwishPageUrl(value) {
@@ -394,8 +496,10 @@ function getStreams(tmdbId, mediaType, season, episode) {
       var language = languagePriority.find(function (lang) {
         return vidhide.some(function (source) {
           return String(source.lang || '').toUpperCase() === lang;
+        }) || streamwish.some(function (source) {
+          return String(source.lang || '').toUpperCase() === lang;
         });
-      });
+      }) || 'LAT';
       var selected = vidhide.filter(function (source) {
         return String(source.lang || '').toUpperCase() === language;
       });
@@ -447,22 +551,22 @@ function getStreams(tmdbId, mediaType, season, episode) {
             'Referer': EMBED69_REFERER,
             'Accept': 'text/html,application/xhtml+xml'
           }).then(function (page) {
-            var playlist = extractStreamwishPlaylist(page.text, item.url);
-            if (!playlist) {
-              log('StreamWish sin manifiesto extraíble: ' + safeUrl(item.url));
-              return null;
-            }
-            log('StreamWish manifiesto extraído: ' + safeUrl(playlist.url));
-            return { playlist: playlist, lang: item.lang };
+            return resolveStreamwishStreams(page.text, item.url, item.lang, type).then(function (playlists) {
+              if (!playlists.length) log('StreamWish sin variantes reproducibles: ' + safeUrl(item.url));
+              return { playlists: playlists, lang: item.lang };
+            });
           }).catch(function (error) {
             log('Fallo leyendo StreamWish ' + safeUrl(item.url) + ': ' + error.message);
             return null;
           });
         })).then(function (resolved) {
           resolved.forEach(function (item) {
-            if (!item || seenStreams.has(item.playlist.url)) return;
-            seenStreams.add(item.playlist.url);
-            streams.push(makeStreamwishStream(item.playlist, item.lang, type));
+            if (!item) return;
+            item.playlists.forEach(function (playlist) {
+              if (seenStreams.has(playlist.url)) return;
+              seenStreams.add(playlist.url);
+              streams.push(makeStreamwishStream(playlist, item.lang, type));
+            });
           });
           return streams;
         });
