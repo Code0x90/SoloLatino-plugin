@@ -336,6 +336,13 @@ function parseStreamwishMaster(text, masterUrl) {
     catch (_) { continue; }
     var resolution = /RESOLUTION=\d+x(\d+)/i.exec(info);
     var height = resolution ? Number(resolution[1]) : 0;
+    if (!height) {
+      var bandwidth = /(?:AVERAGE-BANDWIDTH|BANDWIDTH)=(\d+)/i.exec(info);
+      if (bandwidth) {
+        var bps = Number(bandwidth[1]);
+        height = bps >= 4500000 ? 1080 : bps >= 1800000 ? 720 : bps >= 700000 ? 480 : 0;
+      }
+    }
     var quality = height >= 1000 ? '1080p' : height >= 700 ? '720p' : height >= 450 ? '480p' : 'Auto';
     variants.push({ url: absolute, quality: quality, height: height });
   }
@@ -359,12 +366,12 @@ function streamwishCandidates(links, pageUrl) {
     if (url.charAt(0) === '/') return pageOrigin + url;
     return pageOrigin + '/' + url;
   }
-  // hls3 fue verificado con segmentos MPEG-TS reales. Probamos las alternativas
-  // en orden y validamos la respuesta HTTP antes de entregar una fuente a Kino/Nuvio.
+  // Prioridad: hls3. Si falla, probar hls4 (fallback ya confirmado) y luego hls2.
+  // Los tres pasan por el mismo parser de variantes; no se altera la extensión original.
   return [
     { url: resolve(links.hls3), key: 'hls3' },
-    { url: resolve(links.hls2), key: 'hls2' },
-    { url: resolve(links.hls4), key: 'hls4' }
+    { url: resolve(links.hls4), key: 'hls4' },
+    { url: resolve(links.hls2), key: 'hls2' }
   ].filter(function (item) {
     return item.url && /^https?:\/\//i.test(item.url) && /(?:master\.(?:m3u8|txt)|\.m3u8)(?:\?|$)/i.test(item.url);
   }).map(function (item) {
@@ -392,6 +399,7 @@ function resolveStreamwishStreams(html, pageUrl, language, mediaType) {
     }).then(function (result) {
       var body = result.text || '';
       if (!/^\s*#EXTM3U\b/m.test(body)) throw new Error('Respuesta sin #EXTM3U');
+      log('StreamWish ' + candidate.key + ': manifiesto recibido; analizando variantes.');
       var variants = parseStreamwishMaster(body, candidate.url);
       if (!variants.length) {
         // Si ya es una lista multimedia, se entrega directamente.
