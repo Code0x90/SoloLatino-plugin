@@ -1,4 +1,4 @@
-# SoloLatino 1.0.8
+# SoloLatino 1.0.9
 
 Versión de diagnóstico para probar exclusivamente StreamWish en Nuvio/Kino. VidHide está deshabilitado temporalmente desde `ENABLE_VIDHIDE = false`; su extractor y lógica se conservan en el código, sin modificarlos.
 
