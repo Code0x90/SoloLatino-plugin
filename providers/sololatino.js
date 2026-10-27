@@ -408,11 +408,18 @@ function resolveStreamwishStreams(html, pageUrl) {
       log('StreamWish ' + candidate.key + ': manifiesto recibido; analizando variantes.');
       var variants = parseStreamwishMaster(body, candidate.url);
       if (!variants.length) {
-        // Si ya es una lista multimedia, se entrega directamente.
-        if (/^\s*#EXTINF:/m.test(body)) variants = [{ url: candidate.url, quality: 'Auto', height: 0 }];
-        else throw new Error('Manifiesto maestro sin variantes');
+        // Una lista multimedia directa no declara resoluciones seleccionables; se omite
+        // para cumplir el modo de calidad limitada a 1080p y 720p.
+        if (/^\s*#EXTINF:/m.test(body)) throw new Error('Lista directa sin variantes 1080p/720p');
+        throw new Error('Manifiesto maestro sin variantes');
       }
-      log('StreamWish ' + candidate.key + ' HTTP 200; variantes HLS: ' + variants.length);
+      // Solo publicar 1080p y 720p. Si el mirror no ofrece ninguna de ellas,
+      // se prueba el siguiente HLS en vez de mostrar 480p o Auto.
+      variants = variants.filter(function (variant) {
+        return variant.quality === '1080p' || variant.quality === '720p';
+      });
+      if (!variants.length) throw new Error('No ofrece variantes 1080p/720p');
+      log('StreamWish ' + candidate.key + ' HTTP 200; variantes HLS 1080p/720p: ' + variants.length);
       return variants.map(function (variant) {
         return {
           url: variant.url,
