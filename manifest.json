@@ -1,12 +1,12 @@
 {
   "name": "SoloLatino",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "scrapers": [
     {
       "id": "sololatino",
       "name": "SoloLatino",
       "description": "Proveedor SoloLatino. StreamWish valida el manifiesto y expone variantes HLS por calidad; VidHide deshabilitado temporalmente para pruebas.",
-      "version": "1.1.0",
+      "version": "1.1.1",
       "author": "Code0x90",
       "supportedTypes": [
         "movie",
