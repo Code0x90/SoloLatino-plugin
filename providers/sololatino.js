@@ -7,6 +7,8 @@
 const CryptoJS = require('crypto-js');
 
 const PROVIDER_NAME = 'SoloLatino';
+// Desactivación temporal para diagnosticar StreamWish sin alterar el extractor VidHide.
+const ENABLE_VIDHIDE = false;
 const TMDB_API_KEY = '56db0ec297530920213e1503706b81ff';
 const TMDB_BASE = 'https://api.themoviedb.org/3';
 const EMBED69_BASE = 'https://embed69.org';
@@ -372,9 +374,10 @@ function getStreams(tmdbId, mediaType, season, episode) {
         throw new Error('Embed69 no tiene una entrada directa para ' + slug + '. La búsqueda alternativa en SoloLatino aún no está implementada.');
       }
       var sources = extractEmbed69Sources(result.text);
-      var vidhide = sources.filter(function (source) {
+      var vidhide = ENABLE_VIDHIDE ? sources.filter(function (source) {
         return /vidhide/i.test(source.server) || /morencius\.com/i.test(source.url);
-      });
+      }) : [];
+      if (!ENABLE_VIDHIDE) log('VidHide deshabilitado temporalmente para pruebas; se omite su resolución.');
       var streamwish = sources.filter(function (source) {
         return /streamwish|wish/i.test(source.server) || /(?:hglink\.to|vibuxer\.com)/i.test(source.url);
       });
