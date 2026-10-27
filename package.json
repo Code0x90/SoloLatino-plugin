@@ -1,8 +1,8 @@
 {
   "name": "sololatino-nuvio-plugin",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "private": true,
-  "description": "Nuvio provider for SoloLatino with StreamWish and VidHide HLS extraction",
+  "description": "Nuvio provider for SoloLatino with StreamWish HLS extraction (VidHide temporarily disabled)",
   "scripts": {
     "test": "node --test tests/test-provider.js",
     "test:functionality": "node --test tests/test-provider.js",
