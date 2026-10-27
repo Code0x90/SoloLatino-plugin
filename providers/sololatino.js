@@ -546,30 +546,40 @@ function getStreams(tmdbId, mediaType, season, episode) {
             streamwishPages.push({ url: pageUrl, lang: source.lang || language || 'LAT' });
           }
         });
-        return Promise.all(streamwishPages.map(function (item) {
+        // Resolver mirrors en serie y detenerse en el primero que entregue variantes.
+        // Promise.all esperaba a todos los mirrors, incluso cuando uno ya funcionaba,
+        // dejando la búsqueda abierta mientras otros CDN agotaban el tiempo de espera.
+        function tryStreamwishPage(index) {
+          if (index >= streamwishPages.length) return Promise.resolve(streams);
+          var item = streamwishPages[index];
           return fetchText(item.url, {
             'Referer': EMBED69_REFERER,
             'Accept': 'text/html,application/xhtml+xml'
           }).then(function (page) {
-            return resolveStreamwishStreams(page.text, item.url, item.lang, type).then(function (playlists) {
-              if (!playlists.length) log('StreamWish sin variantes reproducibles: ' + safeUrl(item.url));
-              return { playlists: playlists, lang: item.lang };
-            });
-          }).catch(function (error) {
-            log('Fallo leyendo StreamWish ' + safeUrl(item.url) + ': ' + error.message);
-            return null;
-          });
-        })).then(function (resolved) {
-          resolved.forEach(function (item) {
-            if (!item) return;
-            item.playlists.forEach(function (playlist) {
+            return resolveStreamwishStreams(page.text, item.url, item.lang, type);
+          }).then(function (playlists) {
+            if (!playlists.length) {
+              log('StreamWish sin variantes; se prueba el siguiente mirror: ' + safeUrl(item.url));
+              return tryStreamwishPage(index + 1);
+            }
+            var added = 0;
+            playlists.forEach(function (playlist) {
               if (seenStreams.has(playlist.url)) return;
               seenStreams.add(playlist.url);
               streams.push(makeStreamwishStream(playlist, item.lang, type));
+              added++;
             });
+            if (added > 0) {
+              log('StreamWish: se selecciona el primer mirror válido (' + added + ' variante(s)); se omiten los restantes para evitar esperas.');
+              return streams;
+            }
+            return tryStreamwishPage(index + 1);
+          }).catch(function (error) {
+            log('Fallo leyendo StreamWish ' + safeUrl(item.url) + ': ' + error.message);
+            return tryStreamwishPage(index + 1);
           });
-          return streams;
-        });
+        }
+        return tryStreamwishPage(0);
       });
     })
     .then(function (streams) {
