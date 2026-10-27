@@ -259,6 +259,64 @@ function extractPlaylists(html) {
 }
 
 
+// StreamWish/Vibuxer: la configuración de fuentes está dentro de un bloque JS empaquetado.
+// No se ejecuta el código de la página: solo se desempaqueta texto y se extrae `links`.
+function extractStreamwishPlaylist(html, pageUrl) {
+  var htmlText = String(html || '');
+  var source = htmlText + '\n' + unpackPacked(htmlText);
+  var linksMatch = /links\s*=\s*(\{[^{}]*\})/.exec(source);
+  if (!linksMatch) return null;
+
+  var links;
+  try { links = JSON.parse(linksMatch[1].replace(/\\\//g, '/')); }
+  catch (_) { return null; }
+
+  var pageOriginMatch = String(pageUrl || '').match(/^(https?:\/\/[^/]+)/i);
+  var pageOrigin = pageOriginMatch ? pageOriginMatch[1] : 'https://vibuxer.com';
+  function resolve(value) {
+    if (typeof value !== 'string' || !value.trim()) return null;
+    var url = value.trim().replace(/\\\//g, '/');
+    if (/^https?:\/\//i.test(url)) return url;
+    if (url.indexOf('//') === 0) return 'https:' + url;
+    if (url.charAt(0) === '/') return pageOrigin + url;
+    return pageOrigin + '/' + url;
+  }
+
+  // hls3 fue comprobado y entrega segmentos MPEG-TS reales. hls2 queda como respaldo.
+  // hls4 se deja al final: en las pruebas devolvió segmentos de imágenes, pese a HTTP 200.
+  var candidates = [resolve(links.hls3), resolve(links.hls2), resolve(links.hls4)];
+  for (var i = 0; i < candidates.length; i++) {
+    if (candidates[i] && /^https?:\/\//i.test(candidates[i]) && /(?:master\.(?:m3u8|txt)|\.m3u8)(?:\?|$)/i.test(candidates[i])) {
+      return { url: candidates[i], origin: (candidates[i].match(/^(https?:\/\/[^/]+)/i) || [null, pageOrigin])[1], referer: pageUrl };
+    }
+  }
+  return null;
+}
+
+function makeStreamwishStream(playlist, language, mediaType) {
+  var headers = {
+    'User-Agent': UA,
+    'Referer': playlist.referer || 'https://vibuxer.com/',
+    'Origin': playlist.origin || 'https://vibuxer.com'
+  };
+  return {
+    name: PROVIDER_NAME,
+    title: '',
+    url: playlist.url,
+    quality: '📺 StreamWish\nAuto | HLS | ' + (mediaType === 'tv' ? 'Serie' : 'Película') + '\n' + languageLabel(language),
+    headers: headers,
+    type: 'hls'
+  };
+}
+
+function streamwishPageUrl(value) {
+  var url = String(value || '');
+  // Algunos listados usan hglink.to como alias de la página StreamWish.
+  if (/^https?:\/\/hglink\.to\//i.test(url)) return url.replace(/^https?:\/\/hglink\.to/i, 'https://vibuxer.com');
+  return url;
+}
+
+
 function languageLabel(language) {
   var lang = String(language || '').toUpperCase();
   if (lang === 'ESP') return '🇪🇸 Español';
@@ -317,9 +375,12 @@ function getStreams(tmdbId, mediaType, season, episode) {
       var vidhide = sources.filter(function (source) {
         return /vidhide/i.test(source.server) || /morencius\.com/i.test(source.url);
       });
-      log('Embed69 devolvió ' + sources.length + ' servidores; VidHide: ' + vidhide.length);
-      if (!vidhide.length) {
-        log('No se encontró una fuente VidHide compatible.');
+      var streamwish = sources.filter(function (source) {
+        return /streamwish|wish/i.test(source.server) || /(?:hglink\.to|vibuxer\.com)/i.test(source.url);
+      });
+      log('Embed69 devolvió ' + sources.length + ' servidores; VidHide: ' + vidhide.length + '; StreamWish: ' + streamwish.length);
+      if (!vidhide.length && !streamwish.length) {
+        log('No se encontró una fuente VidHide ni StreamWish compatible.');
         return [];
       }
 
@@ -365,7 +426,41 @@ function getStreams(tmdbId, mediaType, season, episode) {
             streams.push(makeStream(playlist, language, type));
           });
         });
-        return streams;
+
+        // StreamWish se procesa aparte para no alterar el extractor VidHide existente.
+        var streamwishPages = [];
+        var seenStreamwishPages = new Set();
+        streamwish.forEach(function (source) {
+          var pageUrl = streamwishPageUrl(source.url);
+          if (!seenStreamwishPages.has(pageUrl)) {
+            seenStreamwishPages.add(pageUrl);
+            streamwishPages.push({ url: pageUrl, lang: source.lang || language || 'LAT' });
+          }
+        });
+        return Promise.all(streamwishPages.map(function (item) {
+          return fetchText(item.url, {
+            'Referer': EMBED69_REFERER,
+            'Accept': 'text/html,application/xhtml+xml'
+          }).then(function (page) {
+            var playlist = extractStreamwishPlaylist(page.text, item.url);
+            if (!playlist) {
+              log('StreamWish sin manifiesto extraíble: ' + safeUrl(item.url));
+              return null;
+            }
+            log('StreamWish manifiesto extraído: ' + safeUrl(playlist.url));
+            return { playlist: playlist, lang: item.lang };
+          }).catch(function (error) {
+            log('Fallo leyendo StreamWish ' + safeUrl(item.url) + ': ' + error.message);
+            return null;
+          });
+        })).then(function (resolved) {
+          resolved.forEach(function (item) {
+            if (!item || seenStreams.has(item.playlist.url)) return;
+            seenStreams.add(item.playlist.url);
+            streams.push(makeStreamwishStream(item.playlist, item.lang, type));
+          });
+          return streams;
+        });
       });
     })
     .then(function (streams) {
