@@ -14,3 +14,8 @@ Los dos proveedores de un mismo resultado se mantienen en un solo idioma: **espa
 ## Verificaciones
 
 La suite `npm test` valida la normalización de idioma, el orden HLS, el análisis de variantes y la combinación StreamWish/VidHide. La reproducción real debe seguir comprobándose en Nuvio/Kino, porque el estado del CDN cambia por enlace y mirror.
+
+
+## Interruptor de VidHide (v1.2.3)
+
+En `providers/sololatino.js`, cambia `const ENABLE_VIDHIDE = false;` a `true` para habilitar VidHide. En `false`, solo se resuelve StreamWish. HLS4 se mantiene como principal, con HLS3/HLS2 de respaldo.
