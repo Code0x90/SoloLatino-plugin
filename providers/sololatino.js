@@ -7,6 +7,8 @@
 const CryptoJS = require('crypto-js');
 
 const PROVIDER_NAME = 'SoloLatino';
+// Interruptor de proveedores: true = habilitar VidHide; false = solo StreamWish.
+const ENABLE_VIDHIDE = false;
 const TMDB_API_KEY = '56db0ec297530920213e1503706b81ff';
 const TMDB_BASE = 'https://api.themoviedb.org/3';
 const EMBED69_BASE = 'https://embed69.org';
@@ -597,9 +599,9 @@ function getStreams(tmdbId, mediaType, season, episode) {
       var sources = extractEmbed69Sources(result.text);
       var streamwish = sources.filter(isStreamwishSource);
       var vidhide = sources.filter(isVidHideSource);
-      log('Embed69 devolvió ' + sources.length + ' servidores; StreamWish: ' + streamwish.length + '; VidHide: ' + vidhide.length);
+      log('Embed69 devolvió ' + sources.length + ' servidores; StreamWish: ' + streamwish.length + '; VidHide: ' + (ENABLE_VIDHIDE ? vidhide.length : 'deshabilitado por switch')); 
 
-      var supportedSources = streamwish.concat(vidhide);
+      var supportedSources = ENABLE_VIDHIDE ? streamwish.concat(vidhide) : streamwish;
       var preferredLanguage = selectPreferredLanguage(supportedSources);
       if (!preferredLanguage) {
         log('No hay fuentes compatibles en español latino ni inglés; se ignoran español de España y otros idiomas.');
@@ -608,14 +610,14 @@ function getStreams(tmdbId, mediaType, season, episode) {
 
       function resolveLanguage(language) {
         var streamwishForLanguage = streamwish.filter(function (source) { return source.lang === language; });
-        var vidhideForLanguage = vidhide.filter(function (source) { return source.lang === language; });
+        var vidhideForLanguage = ENABLE_VIDHIDE ? vidhide.filter(function (source) { return source.lang === language; }) : [];
         log('Resolviendo idioma ' + languageLabel(language) + '; StreamWish: ' + streamwishForLanguage.length + '; VidHide: ' + vidhideForLanguage.length);
 
         // Se ejecutan ambos proveedores en paralelo para reducir la latencia, pero los
         // resultados se concatenan en el orden pedido: primero StreamWish y luego VidHide.
         return Promise.all([
           resolveStreamwishSources(streamwishForLanguage, language, type),
-          resolveVidHideSources(vidhideForLanguage, language, type)
+          ENABLE_VIDHIDE ? resolveVidHideSources(vidhideForLanguage, language, type) : Promise.resolve([])
         ]).then(function (providerResults) {
           var streamwishStreams = providerResults[0] || [];
           var vidhideStreams = providerResults[1] || [];
@@ -649,8 +651,8 @@ function getStreams(tmdbId, mediaType, season, episode) {
       var language = Array.isArray(result) ? null : result.language;
       var swCount = Array.isArray(result) ? 0 : result.streamwishCount;
       var vhCount = Array.isArray(result) ? 0 : result.vidhideCount;
-      log('Idioma seleccionado: ' + (language || 'ninguno') + '; StreamWish: ' + swCount + '; VidHide: ' + vhCount);
-      log('Resultado: ' + streams.length + ' playlist(s) HLS; StreamWish primero, VidHide después.');
+      log('Idioma seleccionado: ' + (language || 'ninguno') + '; StreamWish: ' + swCount + '; VidHide: ' + (ENABLE_VIDHIDE ? vhCount : 'deshabilitado'));
+      log('Resultado: ' + streams.length + ' playlist(s) HLS; ' + (ENABLE_VIDHIDE ? 'StreamWish primero, VidHide después.' : 'solo StreamWish (switch ENABLE_VIDHIDE=false).'));
       return streams;
     })
     .catch(function (error) {
