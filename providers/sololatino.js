@@ -8,7 +8,7 @@ const CryptoJS = require('crypto-js');
 
 const PROVIDER_NAME = 'SoloLatino';
 // Interruptor de proveedores: true = habilitar VidHide; false = solo StreamWish.
-const ENABLE_VIDHIDE = false;
+const ENABLE_VIDHIDE = true;
 const TMDB_API_KEY = '56db0ec297530920213e1503706b81ff';
 const TMDB_BASE = 'https://api.themoviedb.org/3';
 const EMBED69_BASE = 'https://embed69.org';
