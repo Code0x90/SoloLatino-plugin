@@ -340,6 +340,17 @@ function extractEmbed69Sources(html) {
   var inlineKey = /decryptLink\(server\.link,\s*'(.+?)'\),/.exec(html);
   if (inlineKey) keyHex = utf8ToHex(inlineKey[1]);
 
+  // Formato actual de Embed69: la clave AES se deriva en el reproductor
+  // mediante SHA-256(LINK_CHALLENGE + LINK_SALT), sin POW_CHALLENGE.
+  if (!keyHex) {
+    var linkChallenge = /LINK_CHALLENGE\s*=\s*['\"]([^'\"]+)['\"]/i.exec(html);
+    var linkSalt = /LINK_SALT\s*=\s*['\"]([^'\"]+)['\"]/i.exec(html);
+    if (linkChallenge && linkSalt) {
+      keyHex = CryptoJS.SHA256(linkChallenge[1] + linkSalt[1]).toString(CryptoJS.enc.Hex);
+    }
+  }
+
+  // Compatibilidad con la versión anterior de Embed69.
   if (!keyHex) {
     var pow = /POW_CHALLENGE\s*=\s*'([^']+)';[\s\S]*?POW_DIFFICULTY\s*=\s*(\d+);[\s\S]*?POW_SALT\s*=\s*'([^']+)';/.exec(html);
     if (pow) keyHex = solvePow(pow[1], Number(pow[2]), pow[3]);
