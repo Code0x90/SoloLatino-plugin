@@ -43,9 +43,7 @@ function fetchText(url, headers) {
   });
 }
 
-// Anubis PoW (separado del POW_CHALLENGE propio de Embed69).
-// El algoritmo "fast" de Anubis calcula SHA-256(randomData + nonce) y
-// valida ceros iniciales por nibble hexadecimal.
+// Anubis PoW: se mantiene separado del PoW propio de Embed69.
 function parseAnubisChallenge(html) {
   var match = /<script\b[^>]*\bid=["']anubis_challenge["'][^>]*>([\s\S]*?)<\/script>/i.exec(String(html || ''));
   if (!match) return null;
@@ -72,26 +70,21 @@ function solveAnubisPow(randomData, difficulty) {
     throw new Error('Dificultad Anubis no compatible: ' + difficulty + '.');
   }
 
-  // El worker oficial compara bytes completos y, para dificultad impar,
-  // el nibble alto del byte siguiente. Esto equivale a ceros hex iniciales.
   var fullHexChars = Math.floor(level / 2) * 2;
   var requiresHalfByte = level % 2 !== 0;
-  var zeroPrefix = '0'.repeat(fullHexChars);
   var input = String(randomData);
   var baseHasher = CryptoJS.algo && CryptoJS.algo.SHA256 &&
     typeof CryptoJS.algo.SHA256.create === 'function'
       ? CryptoJS.algo.SHA256.create().update(input)
       : null;
-
-  // Ocho veces el trabajo esperado ofrece un margen alto sin permitir que
-  // una dificultad inesperada monopolice indefinidamente el runtime.
   var maxAttempts = Math.min(8500000, Math.max(1, Math.ceil(Math.pow(16, level) * 8)));
+
   for (var nonce = 0; nonce < maxAttempts; nonce++) {
     var hash = baseHasher
       ? baseHasher.clone().update(String(nonce)).finalize().toString()
       : CryptoJS.SHA256(input + String(nonce)).toString();
 
-    if (hash.slice(0, fullHexChars) === zeroPrefix &&
+    if (hash.slice(0, fullHexChars) === '0'.repeat(fullHexChars) &&
         (!requiresHalfByte || hash.charAt(fullHexChars) === '0')) {
       return { hash: hash, nonce: nonce };
     }
@@ -99,11 +92,11 @@ function solveAnubisPow(randomData, difficulty) {
   throw new Error('No se encontró una solución PoW de Anubis dentro del límite de intentos.');
 }
 
-function fetchEmbed69Raw(url, referer) {
+// Esta función con credenciales explícitas solo se usa en el flujo Anubis.
+// Las solicitudes normales siguen utilizando fetchText() sin cambios.
+function fetchAnubisText(url, referer) {
   return fetch(url, {
     method: 'GET',
-    // La cookie emitida con el desafío debe acompañar el pass-challenge y la
-    // petición final. include es explícito para los runtimes móviles de Nuvio.
     credentials: 'include',
     redirect: 'follow',
     headers: {
@@ -119,48 +112,62 @@ function fetchEmbed69Raw(url, referer) {
   });
 }
 
-function fetchEmbed69Page(url) {
-  return fetchEmbed69Raw(url, 'https://sololatino.net/').then(function (initial) {
+function fetchEmbed69Page(url, headers) {
+  // Mantiene exactamente la petición original en el caso habitual, sin Anubis.
+  return fetchText(url, headers).then(function (initial) {
     var payload = parseAnubisChallenge(initial.text);
     if (!payload) return initial;
 
-    var challenge = payload.challenge;
-    var algorithm = String(payload.rules.algorithm || challenge.method || '').toLowerCase();
-    if (algorithm !== 'fast' && algorithm !== 'slow') {
-      throw new Error('Algoritmo Anubis no compatible: ' + algorithm + '.');
-    }
-
-    log('Anubis detectado (' + (payload.version || 'versión desconocida') +
-      '); resolviendo PoW ' + algorithm + ', dificultad ' + payload.rules.difficulty + '.');
-
-    var powStartedAt = Date.now();
-    var solution = solveAnubisPow(challenge.randomData, payload.rules.difficulty);
-    var elapsedTime = Math.max(0, Date.now() - powStartedAt);
-    var originMatch = String(url).match(/^(https?:\/\/[^/]+)/i);
-    var origin = originMatch ? originMatch[1] : EMBED69_BASE;
-    var passUrl = origin + '/.within.website/x/cmd/anubis/api/pass-challenge' +
-      '?id=' + encodeURIComponent(challenge.id) +
-      '&response=' + encodeURIComponent(solution.hash) +
-      '&nonce=' + encodeURIComponent(String(solution.nonce)) +
-      '&redir=' + encodeURIComponent(url) +
-      '&elapsedTime=' + encodeURIComponent(String(elapsedTime));
-
-    log('Anubis PoW resuelto; nonce ' + solution.nonce + '. Enviando verificación.');
-    return fetchEmbed69Raw(passUrl, url).then(function (verified) {
-      // Normalmente pass-challenge redirige al reproductor y fetch sigue la
-      // redirección. Si el runtime devuelve una respuesta intermedia, volver
-      // a pedir la URL original usando la cookie recién validada.
-      if (!parseAnubisChallenge(verified.text) && /dataLink\s*=/.test(verified.text)) {
-        log('Anubis verificado; Embed69 entregó el reproductor.');
-        return verified;
+    // Repite el GET con credenciales explícitas únicamente al detectar Anubis,
+    // para establecer/conservar la cookie de desafío en runtimes compatibles.
+    return fetchAnubisText(url, 'https://sololatino.net/').then(function (challengePage) {
+      var currentPayload = parseAnubisChallenge(challengePage.text);
+      if (!currentPayload) {
+        if (/dataLink\s*=/.test(challengePage.text)) {
+          log('Anubis ya no aparece en la segunda petición; Embed69 entregó el reproductor.');
+          return challengePage;
+        }
+        throw new Error('Anubis desapareció, pero Embed69 no entregó dataLink.');
       }
 
-      return fetchEmbed69Raw(url, 'https://sololatino.net/').then(function (finalPage) {
-        if (parseAnubisChallenge(finalPage.text)) {
-          throw new Error('Anubis no aceptó la verificación o el runtime no conservó la cookie de sesión.');
+      var challenge = currentPayload.challenge;
+      var algorithm = String(currentPayload.rules.algorithm || challenge.method || '').toLowerCase();
+      if (algorithm !== 'fast' && algorithm !== 'slow') {
+        throw new Error('Algoritmo Anubis no compatible: ' + algorithm + '.');
+      }
+
+      log('Anubis detectado (' + (currentPayload.version || 'versión desconocida') +
+        '); resolviendo PoW ' + algorithm + ', dificultad ' + currentPayload.rules.difficulty + '.');
+
+      var startedAt = Date.now();
+      var solution = solveAnubisPow(challenge.randomData, currentPayload.rules.difficulty);
+      var elapsedTime = Math.max(0, Date.now() - startedAt);
+      var originMatch = String(url).match(/^(https?:\/\/[^/]+)/i);
+      var origin = originMatch ? originMatch[1] : EMBED69_BASE;
+      var passUrl = origin + '/.within.website/x/cmd/anubis/api/pass-challenge' +
+        '?id=' + encodeURIComponent(challenge.id) +
+        '&response=' + encodeURIComponent(solution.hash) +
+        '&nonce=' + encodeURIComponent(String(solution.nonce)) +
+        '&redir=' + encodeURIComponent(url) +
+        '&elapsedTime=' + encodeURIComponent(String(elapsedTime));
+
+      log('Anubis PoW resuelto; nonce ' + solution.nonce + '. Enviando verificación.');
+      return fetchAnubisText(passUrl, url).then(function (verified) {
+        if (!parseAnubisChallenge(verified.text) && /dataLink\s*=/.test(verified.text)) {
+          log('Anubis verificado; Embed69 entregó el reproductor.');
+          return verified;
         }
-        log('Anubis verificado; se recuperó el reproductor mediante la URL original.');
-        return finalPage;
+
+        return fetchAnubisText(url, 'https://sololatino.net/').then(function (finalPage) {
+          if (parseAnubisChallenge(finalPage.text)) {
+            throw new Error('Anubis no aceptó la verificación o el runtime no conservó la cookie de sesión.');
+          }
+          if (!/dataLink\s*=/.test(finalPage.text)) {
+            throw new Error('Anubis verificado, pero Embed69 no entregó dataLink.');
+          }
+          log('Anubis verificado; se recuperó el reproductor mediante la URL original.');
+          return finalPage;
+        });
       });
     });
   });
@@ -340,8 +347,7 @@ function extractEmbed69Sources(html) {
   var inlineKey = /decryptLink\(server\.link,\s*'(.+?)'\),/.exec(html);
   if (inlineKey) keyHex = utf8ToHex(inlineKey[1]);
 
-  // Formato actual de Embed69: la clave AES se deriva en el reproductor
-  // mediante SHA-256(LINK_CHALLENGE + LINK_SALT), sin POW_CHALLENGE.
+  // Formato actual de Embed69: SHA-256(LINK_CHALLENGE + LINK_SALT).
   if (!keyHex) {
     var linkChallenge = /LINK_CHALLENGE\s*=\s*['\"]([^'\"]+)['\"]/i.exec(html);
     var linkSalt = /LINK_SALT\s*=\s*['\"]([^'\"]+)['\"]/i.exec(html);
@@ -350,7 +356,7 @@ function extractEmbed69Sources(html) {
     }
   }
 
-  // Compatibilidad con la versión anterior de Embed69.
+  // Compatibilidad con el mecanismo PoW anterior de Embed69.
   if (!keyHex) {
     var pow = /POW_CHALLENGE\s*=\s*'([^']+)';[\s\S]*?POW_DIFFICULTY\s*=\s*(\d+);[\s\S]*?POW_SALT\s*=\s*'([^']+)';/.exec(html);
     if (pow) keyHex = solvePow(pow[1], Number(pow[2]), pow[3]);
@@ -358,19 +364,7 @@ function extractEmbed69Sources(html) {
 
   var dataMatch = /dataLink\s*=\s*(\[[\s\S]*?\])\s*;/.exec(html) || /dataLink\s*=\s*([^;]+)/.exec(html);
   if (!dataMatch) throw new Error('Embed69 no contiene dataLink.');
-  if (!keyHex) {
-    // Diagnóstico temporal: informa qué formato de clave llegó realmente al plugin,
-    // sin imprimir los valores de challenge/salt ni los enlaces cifrados.
-    log('Diagnóstico Embed69: HTML=' + String(html || '').length +
-      ' chars; dataLink=' + !!dataMatch +
-      '; LINK_CHALLENGE=' + /LINK_CHALLENGE/i.test(html) +
-      '; LINK_SALT=' + /LINK_SALT/i.test(html) +
-      '; POW_CHALLENGE=' + /POW_CHALLENGE/i.test(html) +
-      '; decryptLink=' + /decryptLink/i.test(html) +
-      '; CryptoJS=' + /CryptoJS/i.test(html) +
-      '; scriptTags=' + ((String(html || '').match(/<script\b/gi) || []).length));
-    throw new Error('No se encontró la clave de Embed69. Diagnóstico de formato registrado en el log.');
-  }
+  if (!keyHex) throw new Error('No se encontró la clave de Embed69.');
 
   var data;
   try { data = JSON.parse(dataMatch[1].replace(/\\\//g, '/')); }
@@ -740,7 +734,10 @@ function getStreams(tmdbId, mediaType, season, episode) {
       log(meta.title + (meta.year ? ' (' + meta.year + ')' : '') + ' -> ' + slug);
       var embedUrl = EMBED69_BASE + '/f/' + slug;
       log('GET ' + safeUrl(embedUrl));
-      return fetchEmbed69Page(embedUrl);
+      return fetchEmbed69Page(embedUrl, {
+        'Referer': 'https://sololatino.net/',
+        'Accept': 'text/html,application/xhtml+xml'
+      });
     })
     .then(function (result) {
       if (/No folders found|"error"\s*:/i.test(result.text.slice(0, 1800))) {
