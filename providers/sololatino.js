@@ -358,7 +358,19 @@ function extractEmbed69Sources(html) {
 
   var dataMatch = /dataLink\s*=\s*(\[[\s\S]*?\])\s*;/.exec(html) || /dataLink\s*=\s*([^;]+)/.exec(html);
   if (!dataMatch) throw new Error('Embed69 no contiene dataLink.');
-  if (!keyHex) throw new Error('No se encontró la clave de Embed69.');
+  if (!keyHex) {
+    // Diagnóstico temporal: informa qué formato de clave llegó realmente al plugin,
+    // sin imprimir los valores de challenge/salt ni los enlaces cifrados.
+    log('Diagnóstico Embed69: HTML=' + String(html || '').length +
+      ' chars; dataLink=' + !!dataMatch +
+      '; LINK_CHALLENGE=' + /LINK_CHALLENGE/i.test(html) +
+      '; LINK_SALT=' + /LINK_SALT/i.test(html) +
+      '; POW_CHALLENGE=' + /POW_CHALLENGE/i.test(html) +
+      '; decryptLink=' + /decryptLink/i.test(html) +
+      '; CryptoJS=' + /CryptoJS/i.test(html) +
+      '; scriptTags=' + ((String(html || '').match(/<script\b/gi) || []).length));
+    throw new Error('No se encontró la clave de Embed69. Diagnóstico de formato registrado en el log.');
+  }
 
   var data;
   try { data = JSON.parse(dataMatch[1].replace(/\\\//g, '/')); }
