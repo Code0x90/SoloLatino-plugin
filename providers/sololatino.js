@@ -43,6 +43,129 @@ function fetchText(url, headers) {
   });
 }
 
+// Anubis PoW (separado del POW_CHALLENGE propio de Embed69).
+// El algoritmo "fast" de Anubis calcula SHA-256(randomData + nonce) y
+// valida ceros iniciales por nibble hexadecimal.
+function parseAnubisChallenge(html) {
+  var match = /<script\b[^>]*\bid=["']anubis_challenge["'][^>]*>([\s\S]*?)<\/script>/i.exec(String(html || ''));
+  if (!match) return null;
+
+  var payload;
+  try { payload = JSON.parse(match[1].trim()); }
+  catch (_) { throw new Error('Anubis entregó un desafío JSON inválido.'); }
+
+  if (!payload || !payload.challenge || !payload.rules ||
+      !payload.challenge.id || !payload.challenge.randomData) {
+    throw new Error('El desafío de Anubis no contiene los campos requeridos.');
+  }
+
+  var versionMatch = /<script\b[^>]*\bid=["']anubis_version["'][^>]*>([\s\S]*?)<\/script>/i.exec(String(html || ''));
+  if (versionMatch) {
+    try { payload.version = JSON.parse(versionMatch[1].trim()); } catch (_) {}
+  }
+  return payload;
+}
+
+function solveAnubisPow(randomData, difficulty) {
+  var level = Number(difficulty);
+  if (!Number.isInteger(level) || level < 0 || level > 5) {
+    throw new Error('Dificultad Anubis no compatible: ' + difficulty + '.');
+  }
+
+  // El worker oficial compara bytes completos y, para dificultad impar,
+  // el nibble alto del byte siguiente. Esto equivale a ceros hex iniciales.
+  var fullHexChars = Math.floor(level / 2) * 2;
+  var requiresHalfByte = level % 2 !== 0;
+  var zeroPrefix = '0'.repeat(fullHexChars);
+  var input = String(randomData);
+  var baseHasher = CryptoJS.algo && CryptoJS.algo.SHA256 &&
+    typeof CryptoJS.algo.SHA256.create === 'function'
+      ? CryptoJS.algo.SHA256.create().update(input)
+      : null;
+
+  // Ocho veces el trabajo esperado ofrece un margen alto sin permitir que
+  // una dificultad inesperada monopolice indefinidamente el runtime.
+  var maxAttempts = Math.min(8500000, Math.max(1, Math.ceil(Math.pow(16, level) * 8)));
+  for (var nonce = 0; nonce < maxAttempts; nonce++) {
+    var hash = baseHasher
+      ? baseHasher.clone().update(String(nonce)).finalize().toString()
+      : CryptoJS.SHA256(input + String(nonce)).toString();
+
+    if (hash.slice(0, fullHexChars) === zeroPrefix &&
+        (!requiresHalfByte || hash.charAt(fullHexChars) === '0')) {
+      return { hash: hash, nonce: nonce };
+    }
+  }
+  throw new Error('No se encontró una solución PoW de Anubis dentro del límite de intentos.');
+}
+
+function fetchEmbed69Raw(url, referer) {
+  return fetch(url, {
+    method: 'GET',
+    // La cookie emitida con el desafío debe acompañar el pass-challenge y la
+    // petición final. include es explícito para los runtimes móviles de Nuvio.
+    credentials: 'include',
+    redirect: 'follow',
+    headers: {
+      'User-Agent': UA,
+      'Accept': 'text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8',
+      'Referer': referer || 'https://sololatino.net/'
+    }
+  }).then(function (response) {
+    return response.text().then(function (text) {
+      if (!response.ok) throw new Error('HTTP ' + response.status + ' en ' + safeUrl(url));
+      return { response: response, text: text };
+    });
+  });
+}
+
+function fetchEmbed69Page(url) {
+  return fetchEmbed69Raw(url, 'https://sololatino.net/').then(function (initial) {
+    var payload = parseAnubisChallenge(initial.text);
+    if (!payload) return initial;
+
+    var challenge = payload.challenge;
+    var algorithm = String(payload.rules.algorithm || challenge.method || '').toLowerCase();
+    if (algorithm !== 'fast' && algorithm !== 'slow') {
+      throw new Error('Algoritmo Anubis no compatible: ' + algorithm + '.');
+    }
+
+    log('Anubis detectado (' + (payload.version || 'versión desconocida') +
+      '); resolviendo PoW ' + algorithm + ', dificultad ' + payload.rules.difficulty + '.');
+
+    var powStartedAt = Date.now();
+    var solution = solveAnubisPow(challenge.randomData, payload.rules.difficulty);
+    var elapsedTime = Math.max(0, Date.now() - powStartedAt);
+    var originMatch = String(url).match(/^(https?:\/\/[^/]+)/i);
+    var origin = originMatch ? originMatch[1] : EMBED69_BASE;
+    var passUrl = origin + '/.within.website/x/cmd/anubis/api/pass-challenge' +
+      '?id=' + encodeURIComponent(challenge.id) +
+      '&response=' + encodeURIComponent(solution.hash) +
+      '&nonce=' + encodeURIComponent(String(solution.nonce)) +
+      '&redir=' + encodeURIComponent(url) +
+      '&elapsedTime=' + encodeURIComponent(String(elapsedTime));
+
+    log('Anubis PoW resuelto; nonce ' + solution.nonce + '. Enviando verificación.');
+    return fetchEmbed69Raw(passUrl, url).then(function (verified) {
+      // Normalmente pass-challenge redirige al reproductor y fetch sigue la
+      // redirección. Si el runtime devuelve una respuesta intermedia, volver
+      // a pedir la URL original usando la cookie recién validada.
+      if (!parseAnubisChallenge(verified.text) && /dataLink\s*=/.test(verified.text)) {
+        log('Anubis verificado; Embed69 entregó el reproductor.');
+        return verified;
+      }
+
+      return fetchEmbed69Raw(url, 'https://sololatino.net/').then(function (finalPage) {
+        if (parseAnubisChallenge(finalPage.text)) {
+          throw new Error('Anubis no aceptó la verificación o el runtime no conservó la cookie de sesión.');
+        }
+        log('Anubis verificado; se recuperó el reproductor mediante la URL original.');
+        return finalPage;
+      });
+    });
+  });
+}
+
 function fetchJson(url) {
   return fetch(url, {
     method: 'GET',
@@ -594,10 +717,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
       log(meta.title + (meta.year ? ' (' + meta.year + ')' : '') + ' -> ' + slug);
       var embedUrl = EMBED69_BASE + '/f/' + slug;
       log('GET ' + safeUrl(embedUrl));
-      return fetchText(embedUrl, {
-        'Referer': 'https://sololatino.net/',
-        'Accept': 'text/html,application/xhtml+xml'
-      });
+      return fetchEmbed69Page(embedUrl);
     })
     .then(function (result) {
       if (/No folders found|"error"\s*:/i.test(result.text.slice(0, 1800))) {
