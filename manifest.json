@@ -1,12 +1,12 @@
 {
   "name": "SoloLatino",
-  "version": "1.2.4",
+  "version": "1.2.6",
   "scrapers": [
     {
       "id": "sololatino",
       "name": "SoloLatino",
       "description": "SoloLatino: StreamWish HLS4-first; solo muestra 1080p y 720p. VidHide controlado por ENABLE_VIDHIDE.",
-      "version": "1.2.4",
+      "version": "1.2.6",
       "author": "Code0x90",
       "supportedTypes": [
         "movie",
